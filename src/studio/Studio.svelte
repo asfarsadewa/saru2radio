@@ -27,7 +27,7 @@
 		updateNowPlaying,
 		updateStudioState
 	} from '../lib/api';
-	import { StudioEngine } from '../lib/audio/studioEngine';
+	import { StudioEngine, type MicCaptureState, type MicColorMode } from '../lib/audio/studioEngine';
 	import type { BroadcastStatus, LibraryState, NowPlaying, ServerConfig, Track, TunnelState } from '../lib/types';
 
 	let config: ServerConfig | null = null;
@@ -49,12 +49,21 @@
 	let errorMessage = '';
 	let busyMessage = '';
 	let outputLevel = 0.05;
+	let micLevel = 0;
+	let micDevices: MediaDeviceInfo[] = [];
+	let selectedMicId = '';
+	let micLabel = '';
+	let micMessage = '';
+	let micMuted = false;
+	let micColor: MicColorMode = 'broadcast';
 	let musicVolume = 0.92;
 	let micVolume = 0.92;
 	let duckingDb = -12;
 	let monitor = false;
 	let micLatched = false;
 	let micHeld = false;
+	let micOpen = false;
+	let micReady = false;
 	let pollTimer: number | undefined;
 	const engine = new StudioEngine();
 
@@ -64,9 +73,15 @@
 	$: sourceConnected = Boolean(status?.sourceConnected);
 	$: listenerUrl = tunnel.url ?? config?.listenerUrl ?? '';
 	$: levelStyle = `--level: ${outputLevel.toFixed(3)};`;
+	$: micOpen = micHeld || micLatched;
+	$: micLevelStyle = `--mic-level: ${micLevel.toFixed(3)};`;
+	$: micButtonLabel = micOpen ? (micReady && !micMuted ? 'Mic open' : 'No mic') : 'Hold mic';
+	$: micStatusLabel = micReady ? (micMuted ? 'MIC MUTED' : 'MIC READY') : 'MIC NOT CONNECTED';
+	$: micDetail = micMessage || micLabel || 'Choose an input, then go on air.';
 
 	onMount(async () => {
 		await refreshAll();
+		await refreshMicrophones();
 		pollTimer = window.setInterval(refreshStatusOnly, 2500);
 	});
 
@@ -172,6 +187,12 @@
 				onLevel: (level) => {
 					outputLevel = level;
 				},
+				onMicLevel: (level) => {
+					micLevel = level;
+				},
+				onMicState: (state) => {
+					applyMicCaptureState(state);
+				},
 				onError: (message) => {
 					errorMessage = message;
 				},
@@ -183,6 +204,7 @@
 			});
 			status = await getStatus();
 			nowPlaying = await getNowPlaying();
+			await refreshMicrophones();
 			outputLevel = 0.72;
 		} catch (error) {
 			await engine.stop();
@@ -197,6 +219,11 @@
 		await engine.stop();
 		micLatched = false;
 		micHeld = false;
+		micReady = false;
+		micLevel = 0;
+		micLabel = '';
+		micMessage = '';
+		micMuted = false;
 		status = await stopBroadcast();
 		nowPlaying = null;
 		outputLevel = 0.05;
@@ -211,6 +238,20 @@
 		applyMicState();
 	}
 
+	function beginMicHold(event: PointerEvent) {
+		if (event.currentTarget instanceof HTMLElement) {
+			event.currentTarget.setPointerCapture(event.pointerId);
+		}
+		setMic(true);
+	}
+
+	function endMicHold(event: PointerEvent) {
+		if (event.currentTarget instanceof HTMLElement && event.currentTarget.hasPointerCapture(event.pointerId)) {
+			event.currentTarget.releasePointerCapture(event.pointerId);
+		}
+		setMic(false);
+	}
+
 	function toggleLatch() {
 		micLatched = !micLatched;
 		applyMicState();
@@ -220,8 +261,51 @@
 		engine.setOptions(getEngineOptions());
 	}
 
+	async function retryMic() {
+		errorMessage = '';
+		try {
+			await engine.retryMicrophone();
+			await refreshMicrophones();
+		} catch (error) {
+			setError(error);
+		}
+	}
+
+	async function changeMicDevice() {
+		errorMessage = '';
+		try {
+			await engine.selectMicrophone(selectedMicId);
+			await refreshMicrophones();
+		} catch (error) {
+			setError(error);
+		}
+	}
+
 	function applyMicState() {
 		engine.setMicOpen(micHeld || micLatched);
+	}
+
+	function applyMicCaptureState(state: MicCaptureState) {
+		micReady = state.connected;
+		micLabel = state.label;
+		micMuted = state.muted;
+		micMessage = state.message ?? '';
+		if (!state.connected) {
+			micLevel = 0;
+		}
+	}
+
+	async function refreshMicrophones() {
+		if (!navigator.mediaDevices?.enumerateDevices) {
+			micDevices = [];
+			return;
+		}
+
+		try {
+			micDevices = (await navigator.mediaDevices.enumerateDevices()).filter((device) => device.kind === 'audioinput');
+		} catch {
+			micDevices = [];
+		}
 	}
 
 	async function handleTrackChange(track: Track) {
@@ -270,6 +354,8 @@
 			bitrateKbps: config?.bitrateKbps ?? 64,
 			musicVolume: Number(musicVolume),
 			micVolume: Number(micVolume),
+			micDeviceId: selectedMicId,
+			micColor,
 			duckingDb: Number(duckingDb),
 			monitor
 		};
@@ -458,22 +544,56 @@
 
 			<div class="mic-pad">
 				<button
+					aria-pressed={micOpen}
+					class:active={micOpen && micReady && !micMuted}
 					class:latched={micLatched}
+					class:missing={micOpen && (!micReady || micMuted)}
 					class="mic-button"
 					type="button"
 					disabled={!onAir}
-					on:mousedown={() => setMic(true)}
-					on:mouseup={() => setMic(false)}
-					on:mouseleave={() => setMic(false)}
-					on:touchstart|preventDefault={() => setMic(true)}
-					on:touchend|preventDefault={() => setMic(false)}
+					on:pointerdown={beginMicHold}
+					on:pointerup={endMicHold}
+					on:pointercancel={endMicHold}
 				>
 					<Mic />
-					Hold mic
+					{micButtonLabel}
 				</button>
 				<button class="tool-button" type="button" disabled={!onAir} on:click={toggleLatch}>
 					{micLatched ? 'Unlatch' : 'Latch'}
 				</button>
+			</div>
+
+			<div class="mic-select-grid">
+				<label class="field mic-device">
+					<span>Microphone input</span>
+					<select bind:value={selectedMicId} on:change={changeMicDevice}>
+						<option value="">Default browser microphone</option>
+						{#each micDevices as device, index (device.deviceId)}
+							<option value={device.deviceId}>{device.label || `Microphone ${index + 1}`}</option>
+						{/each}
+					</select>
+				</label>
+
+				<label class="field">
+					<span>Mic color</span>
+					<select bind:value={micColor} on:change={applyAudioOptions}>
+						<option value="broadcast">Broadcast</option>
+						<option value="shortwave">Shortwave</option>
+						<option value="clean">Clean</option>
+					</select>
+				</label>
+			</div>
+
+			<div class="mic-status" style={micLevelStyle}>
+				<div>
+					<span class:ready={micReady && !micMuted} class:offline={!micReady || micMuted} class="status-dot"></span>
+					<span>{micStatusLabel}</span>
+				</div>
+				<div class="mic-meter" aria-label="Microphone signal">
+					<span></span>
+				</div>
+				<p>{micDetail}</p>
+				<button class="tool-button" type="button" disabled={!onAir} on:click={retryMic}>Retry mic</button>
 			</div>
 
 			<label class="range">
@@ -495,12 +615,14 @@
 
 			<div class="queue-list">
 				<span class="eyebrow">queue</span>
-				{#each queue.slice(0, 8) as track (track.id)}
-					<p>{track.title}</p>
-				{/each}
-				{#if queue.length === 0}
-					<p class="empty-note">Prepared songs appear here.</p>
-				{/if}
+				<div class="queue-items">
+					{#each queue.slice(0, 8) as track (track.id)}
+						<p>{track.title}</p>
+					{/each}
+					{#if queue.length === 0}
+						<p class="empty-note">Prepared songs appear here.</p>
+					{/if}
+				</div>
 			</div>
 		</aside>
 	</section>
@@ -610,13 +732,18 @@
 		text-transform: uppercase;
 	}
 
-	input {
+	input,
+	select {
 		width: 100%;
 		border: 1px solid var(--line);
 		border-radius: 4px;
 		background: rgba(255, 255, 255, 0.58);
 		color: var(--ink);
 		padding: 10px 11px;
+	}
+
+	select {
+		appearance: auto;
 	}
 
 	.action-row {
@@ -674,8 +801,7 @@
 
 	.track-row strong,
 	.track-row span,
-	.track-row em,
-	.queue-list p {
+	.track-row em {
 		display: block;
 		overflow: hidden;
 		text-overflow: ellipsis;
@@ -814,12 +940,18 @@
 
 	.mic-pad {
 		gap: 8px;
+		align-items: stretch;
+	}
+
+	.mic-select-grid {
+		display: grid;
+		gap: 10px;
 	}
 
 	.mic-button {
 		display: grid;
 		width: 100%;
-		aspect-ratio: 1 / 0.62;
+		min-height: clamp(104px, 18dvh, 152px);
 		place-items: center;
 		border-radius: 6px;
 		background: var(--panel-dark);
@@ -828,15 +960,61 @@
 		font-weight: 800;
 		letter-spacing: 0.14em;
 		text-transform: uppercase;
+		touch-action: none;
+		user-select: none;
 	}
 
+	.mic-button.active,
 	.mic-button.latched {
 		background: var(--signal);
+	}
+
+	.mic-button.missing {
+		background: #6c241f;
 	}
 
 	.mic-button :global(svg) {
 		width: 26px;
 		height: 26px;
+	}
+
+	.mic-status {
+		display: grid;
+		gap: 7px;
+	}
+
+	.mic-status > div:first-child {
+		display: flex;
+		align-items: center;
+		gap: 7px;
+		color: var(--ink-dim);
+		font-size: 10px;
+		font-weight: 800;
+		letter-spacing: 0.12em;
+		text-transform: uppercase;
+	}
+
+	.mic-meter {
+		height: 8px;
+		overflow: hidden;
+		border-radius: 999px;
+		background: rgba(20, 19, 17, 0.12);
+	}
+
+	.mic-meter span {
+		display: block;
+		width: calc(var(--mic-level) * 100%);
+		height: 100%;
+		border-radius: inherit;
+		background: var(--signal);
+		transition: width 80ms linear;
+	}
+
+	.mic-status p {
+		margin: 0;
+		color: var(--ink-dim);
+		font-size: 11px;
+		line-height: 1.35;
 	}
 
 	.range {
@@ -867,15 +1045,37 @@
 	}
 
 	.queue-list {
-		max-height: min(34dvh, 260px);
-		margin-top: auto;
-		min-height: 0;
+		flex: 1 1 172px;
+		min-height: 148px;
+		margin-top: 2px;
+		grid-template-rows: auto minmax(0, 1fr);
+		overflow: hidden;
 	}
 
-	.queue-list p {
+	.queue-items {
+		min-height: 0;
+		overflow: auto;
+		padding-right: 3px;
+	}
+
+	.queue-items p {
+		display: block;
+		box-sizing: border-box;
+		min-height: 32px;
 		margin: 0;
-		padding: 8px 0;
+		overflow: hidden;
+		padding: 7px 0;
 		border-bottom: 1px solid var(--line);
+		color: var(--ink);
+		font-size: 13px;
+		line-height: 18px;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.queue-items .empty-note {
+		color: var(--ink-dim);
+		font-size: 11px;
 	}
 
 	.toast {
@@ -909,6 +1109,24 @@
 
 		.facade p {
 			max-width: 58vw;
+		}
+
+		.mixer-panel {
+			gap: 12px;
+		}
+
+		.mic-button {
+			min-height: clamp(104px, 16dvh, 136px);
+		}
+
+		.queue-list {
+			flex: none;
+			min-height: 0;
+			overflow: visible;
+		}
+
+		.queue-items {
+			overflow: visible;
 		}
 	}
 </style>
