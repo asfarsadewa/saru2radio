@@ -18,6 +18,8 @@ import { RADIO_SOUND_FALLBACK_EXE } from './paths.js';
 
 const execFileAsync = promisify(execFile);
 const CACHE_DIR_NAME = '.saru2radio-cache';
+const CACHE_TRACKS_DIR_NAME = 'tracks';
+const BROADCAST_AUDIO_EXTENSIONS = new Set(['.mp3']);
 
 type ManifestTrack = CacheFingerprint & {
 	cachePath: string;
@@ -54,7 +56,9 @@ export class LibraryManager {
 		directory: '',
 		tracks: [],
 		preparing: false,
-		lastScanAt: null
+		lastScanAt: null,
+		recursive: false,
+		sourceKind: 'empty'
 	};
 
 	constructor(private readonly radioToolPath: string | null) {}
@@ -92,6 +96,7 @@ export class LibraryManager {
 			tracks.push({
 				id,
 				sourcePath: file,
+				playPath: cachePath,
 				fileName: path.basename(file),
 				title: metadata.title,
 				artist: metadata.artist,
@@ -108,7 +113,32 @@ export class LibraryManager {
 			directory: normalized,
 			tracks: tracks.sort((left, right) => left.fileName.localeCompare(right.fileName)),
 			preparing: false,
-			lastScanAt: new Date().toISOString()
+			lastScanAt: new Date().toISOString(),
+			recursive: options.recursive ?? true,
+			sourceKind: 'prepare-source'
+		};
+		return this.getState();
+	}
+
+	async scanBroadcast(directory: string, options: ScanOptions = {}): Promise<LibraryState> {
+		const normalized = path.resolve(directory);
+		const stat = await fs.stat(normalized);
+		if (!stat.isDirectory()) {
+			throw new Error('Broadcast path is not a directory.');
+		}
+
+		const source = await resolveBroadcastSource(normalized);
+		const tracks = source.manifest
+			? await tracksFromManifest(source)
+			: await tracksFromReadyFolder(source.tracksDirectory, { recursive: options.recursive ?? false });
+
+		this.state = {
+			directory: normalized,
+			tracks: tracks.sort((left, right) => left.fileName.localeCompare(right.fileName)),
+			preparing: false,
+			lastScanAt: new Date().toISOString(),
+			recursive: options.recursive ?? false,
+			sourceKind: source.kind
 		};
 		return this.getState();
 	}
@@ -163,6 +193,7 @@ export class LibraryManager {
 					await runRadioTool(this.radioToolPath, track.sourcePath, track.cachePath, stableTrackSeed(track.sourcePath));
 					track.cacheReady = true;
 					track.cacheStale = false;
+					track.playPath = track.cachePath;
 					track.error = undefined;
 					manifest.tracks[track.id] = {
 						sourcePath: track.sourcePath,
@@ -236,6 +267,141 @@ async function findAudioFiles(directory: string, options: Required<ScanOptions>)
 	return files;
 }
 
+type BroadcastSource = {
+	kind: LibraryState['sourceKind'];
+	directory: string;
+	tracksDirectory: string;
+	manifest: CacheManifest | null;
+};
+
+async function resolveBroadcastSource(directory: string): Promise<BroadcastSource> {
+	const name = path.basename(directory).toLowerCase();
+	const parentName = path.basename(path.dirname(directory)).toLowerCase();
+
+	if (name === CACHE_TRACKS_DIR_NAME && parentName === CACHE_DIR_NAME) {
+		const cacheDirectory = path.dirname(directory);
+		return {
+			kind: 'cache-tracks',
+			directory,
+			tracksDirectory: directory,
+			manifest: await readManifestIfExists(cacheDirectory)
+		};
+	}
+
+	if (name === CACHE_DIR_NAME) {
+		return {
+			kind: 'cache-manifest',
+			directory,
+			tracksDirectory: path.join(directory, CACHE_TRACKS_DIR_NAME),
+			manifest: await readManifestIfExists(directory)
+		};
+	}
+
+	const cacheDirectory = path.join(directory, CACHE_DIR_NAME);
+	const manifest = await readManifestIfExists(cacheDirectory);
+	if (manifest) {
+		return {
+			kind: 'cache-manifest',
+			directory,
+			tracksDirectory: path.join(cacheDirectory, CACHE_TRACKS_DIR_NAME),
+			manifest
+		};
+	}
+
+	return {
+		kind: 'ready-folder',
+		directory,
+		tracksDirectory: directory,
+		manifest: null
+	};
+}
+
+async function tracksFromManifest(source: BroadcastSource): Promise<Track[]> {
+	if (!source.manifest) {
+		return [];
+	}
+
+	const tracks: Track[] = [];
+	for (const [id, entry] of Object.entries(source.manifest.tracks)) {
+		const playPath = await resolveManifestPlayPath(entry, source.tracksDirectory);
+		if (!playPath) {
+			continue;
+		}
+
+		const fileStat = await fs.stat(playPath);
+		const sourcePath = entry.sourcePath || playPath;
+		tracks.push({
+			id,
+			sourcePath,
+			playPath,
+			fileName: path.basename(sourcePath),
+			title: entry.title || path.parse(sourcePath).name,
+			artist: entry.artist || 'Unknown artist',
+			duration: entry.duration ?? null,
+			size: fileStat.size,
+			mtimeMs: fileStat.mtimeMs,
+			cachePath: playPath,
+			cacheReady: true,
+			cacheStale: false
+		});
+	}
+	return tracks;
+}
+
+async function tracksFromReadyFolder(directory: string, options: Required<ScanOptions>): Promise<Track[]> {
+	const files = await findBroadcastAudioFiles(directory, options);
+	const tracks: Track[] = [];
+
+	for (const file of files) {
+		const fileStat = await fs.stat(file);
+		const metadata = await readTrackMetadata(file);
+		tracks.push({
+			id: createTrackId(file),
+			sourcePath: file,
+			playPath: file,
+			fileName: path.basename(file),
+			title: metadata.title,
+			artist: metadata.artist,
+			duration: metadata.duration,
+			size: fileStat.size,
+			mtimeMs: fileStat.mtimeMs,
+			cachePath: file,
+			cacheReady: true,
+			cacheStale: false
+		});
+	}
+	return tracks;
+}
+
+async function findBroadcastAudioFiles(directory: string, options: Required<ScanOptions>): Promise<string[]> {
+	const entries = await fs.readdir(directory, { withFileTypes: true });
+	const files: string[] = [];
+
+	for (const entry of entries) {
+		const fullPath = path.join(directory, entry.name);
+		if (entry.isDirectory()) {
+			if (!options.recursive || entry.name === CACHE_DIR_NAME || entry.name === 'node_modules') {
+				continue;
+			}
+			files.push(...(await findBroadcastAudioFiles(fullPath, options)));
+		} else if (entry.isFile() && BROADCAST_AUDIO_EXTENSIONS.has(path.extname(fullPath).toLowerCase())) {
+			files.push(fullPath);
+		}
+	}
+
+	return files;
+}
+
+async function resolveManifestPlayPath(entry: ManifestTrack, tracksDirectory: string): Promise<string | null> {
+	const candidates = [entry.cachePath, path.join(tracksDirectory, path.basename(entry.cachePath))].filter(Boolean);
+	for (const candidate of candidates) {
+		if (await fileExists(candidate)) {
+			return candidate;
+		}
+	}
+	return null;
+}
+
 async function readTrackMetadata(filePath: string): Promise<{ title: string; artist: string; duration: number | null }> {
 	try {
 		const metadata = await parseFile(filePath, { duration: true });
@@ -294,6 +460,14 @@ async function readManifest(directory: string): Promise<CacheManifest> {
 			preset: radioPresetKey(),
 			tracks: {}
 		};
+	}
+}
+
+async function readManifestIfExists(cacheDirectory: string): Promise<CacheManifest | null> {
+	try {
+		return JSON.parse(await fs.readFile(path.join(cacheDirectory, 'manifest.json'), 'utf8')) as CacheManifest;
+	} catch {
+		return null;
 	}
 }
 

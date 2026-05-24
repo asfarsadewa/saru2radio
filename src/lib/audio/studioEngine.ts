@@ -30,6 +30,7 @@ export class StudioEngine {
 	private currentSource: AudioBufferSourceNode | null = null;
 	private currentQueue: Track[] = [];
 	private currentIndex = 0;
+	private sourceToken = 0;
 	private callbacks: EngineCallbacks | null = null;
 	private options: EngineOptions | null = null;
 	private running = false;
@@ -112,6 +113,7 @@ export class StudioEngine {
 	async stop() {
 		this.running = false;
 		this.skipRequested = false;
+		this.sourceToken += 1;
 		this.currentSource?.stop();
 		this.currentSource = null;
 
@@ -152,6 +154,34 @@ export class StudioEngine {
 	skip() {
 		this.skipRequested = true;
 		this.currentSource?.stop();
+	}
+
+	async playNow(track: Track) {
+		if (!this.running) {
+			this.currentQueue = [track, ...this.currentQueue.filter((queued) => queued.id !== track.id)];
+			this.currentIndex = 0;
+			return;
+		}
+
+		this.currentQueue = [track, ...this.currentQueue.filter((queued) => queued.id !== track.id)];
+		this.currentIndex = 0;
+		this.skipRequested = false;
+		const previous = this.currentSource;
+		this.currentSource = null;
+		this.sourceToken += 1;
+		previous?.stop();
+		await this.playCurrentTrack();
+	}
+
+	setQueue(queue: Track[]) {
+		if (queue.length === 0) {
+			return;
+		}
+
+		const current = this.currentQueue[this.currentIndex % this.currentQueue.length];
+		this.currentQueue = queue;
+		const currentIndex = current ? queue.findIndex((track) => track.id === current.id) : -1;
+		this.currentIndex = currentIndex >= 0 ? currentIndex : 0;
 	}
 
 	setMicOpen(open: boolean) {
@@ -218,16 +248,18 @@ export class StudioEngine {
 
 		const buffer = await this.context.decodeAudioData(await response.arrayBuffer());
 		const source = this.context.createBufferSource();
+		const sourceToken = (this.sourceToken += 1);
 		source.buffer = buffer;
 		source.connect(this.musicGain);
 		source.onended = () => {
-			if (!this.running) {
+			if (!this.running || sourceToken !== this.sourceToken || this.currentSource !== source) {
 				return;
 			}
 
 			const advanceBy = this.skipRequested ? 1 : 1;
 			this.skipRequested = false;
 			this.currentIndex = (this.currentIndex + advanceBy) % this.currentQueue.length;
+			this.currentSource = null;
 			void this.playCurrentTrack().catch((error) => this.callbacks?.onError(error.message));
 		};
 		this.currentSource = source;

@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { LibraryManager } from '../server/library.js';
+import { StudioStateStore } from '../server/studio-state.js';
 
 describe('LibraryManager', () => {
 	it('can scan only the selected directory root for CLI preparation', async () => {
@@ -21,6 +22,100 @@ describe('LibraryManager', () => {
 
 			const recursive = await manager.scan(directory);
 			expect(recursive.tracks.map((track) => track.fileName).sort()).toEqual(['nested.mp3', 'root.mp3']);
+		} finally {
+			await fs.rm(directory, { recursive: true, force: true });
+		}
+	});
+
+	it('scans a ready-to-air MP3 folder without requiring cache preparation', async () => {
+		const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'saru2radio-ready-'));
+
+		try {
+			await fs.writeFile(path.join(directory, 'root.mp3'), 'not-real-audio');
+			await fs.mkdir(path.join(directory, 'album'));
+			await fs.writeFile(path.join(directory, 'album', 'nested.mp3'), 'not-real-audio');
+
+			const manager = new LibraryManager(null);
+			const rootOnly = await manager.scanBroadcast(directory);
+			expect(rootOnly.sourceKind).toBe('ready-folder');
+			expect(rootOnly.tracks.map((track) => track.fileName)).toEqual(['root.mp3']);
+			expect(rootOnly.tracks[0].cacheReady).toBe(true);
+			expect(rootOnly.tracks[0].playPath).toBe(path.join(directory, 'root.mp3'));
+
+			const recursive = await manager.scanBroadcast(directory, { recursive: true });
+			expect(recursive.tracks.map((track) => track.fileName).sort()).toEqual(['nested.mp3', 'root.mp3']);
+		} finally {
+			await fs.rm(directory, { recursive: true, force: true });
+		}
+	});
+
+	it('scans source, cache, and tracks folders using manifest metadata', async () => {
+		const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'saru2radio-cache-'));
+
+		try {
+			const sourcePath = path.join(directory, 'original.mp3');
+			const cacheDirectory = path.join(directory, '.saru2radio-cache');
+			const tracksDirectory = path.join(cacheDirectory, 'tracks');
+			const cachePath = path.join(tracksDirectory, 'abc123.radio.mp3');
+			await fs.mkdir(tracksDirectory, { recursive: true });
+			await fs.writeFile(sourcePath, 'original');
+			await fs.writeFile(cachePath, 'radio-copy');
+			await fs.writeFile(
+				path.join(cacheDirectory, 'manifest.json'),
+				JSON.stringify({
+					version: 1,
+					preset: 'sw-0.7-mp3',
+					tracks: {
+						track123: {
+							sourcePath,
+							size: 8,
+							mtimeMs: 1,
+							preset: 'sw-0.7-mp3',
+							cachePath,
+							title: 'Manifest Title',
+							artist: 'Manifest Artist',
+							duration: 123
+						}
+					}
+				})
+			);
+
+			for (const input of [directory, cacheDirectory, tracksDirectory]) {
+				const scanned = await new LibraryManager(null).scanBroadcast(input);
+				expect(scanned.tracks).toHaveLength(1);
+				expect(scanned.tracks[0]).toMatchObject({
+					id: 'track123',
+					title: 'Manifest Title',
+					artist: 'Manifest Artist',
+					duration: 123,
+					sourcePath,
+					playPath: cachePath,
+					cacheReady: true
+				});
+			}
+		} finally {
+			await fs.rm(directory, { recursive: true, force: true });
+		}
+	});
+
+	it('persists studio state for broadcast library restore', async () => {
+		const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'saru2radio-state-'));
+		const statePath = path.join(directory, 'studio-state.json');
+
+		try {
+			const store = new StudioStateStore(statePath);
+			await store.update({
+				broadcastDirectory: 'C:\\Music\\Radio',
+				broadcastRecursive: true,
+				ordered: true
+			});
+
+			const reloaded = new StudioStateStore(statePath);
+			expect(await reloaded.load()).toMatchObject({
+				broadcastDirectory: 'C:\\Music\\Radio',
+				broadcastRecursive: true,
+				ordered: true
+			});
 		} finally {
 			await fs.rm(directory, { recursive: true, force: true });
 		}

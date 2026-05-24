@@ -20,6 +20,7 @@ export type NowPlaying = {
 export type Track = {
 	id: string;
 	sourcePath: string;
+	playPath: string;
 	fileName: string;
 	title: string;
 	artist: string;
@@ -37,6 +38,16 @@ export type LibraryState = {
 	tracks: Track[];
 	preparing: boolean;
 	lastScanAt: string | null;
+	recursive: boolean;
+	sourceKind: 'empty' | 'ready-folder' | 'cache-manifest' | 'cache-tracks' | 'prepare-source';
+};
+
+export type StudioState = {
+	broadcastDirectory: string;
+	broadcastRecursive: boolean;
+	ordered: boolean;
+	prepDirectory: string;
+	updatedAt: string | null;
 };
 
 export type ServerConfig = {

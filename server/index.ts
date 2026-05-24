@@ -16,6 +16,7 @@ import {
 import { LibraryManager, resolveRadioToolPath } from './library.js';
 import { DIST_DIR } from './paths.js';
 import { DirectMp3Playout } from './playout.js';
+import { StudioStateStore } from './studio-state.js';
 import { hasCloudflared, TunnelManager } from './tunnel.js';
 
 const STATION_NAME = 'saru2radio';
@@ -35,6 +36,7 @@ let nowPlaying: NowPlaying = {
 
 const radioToolPath = await resolveExistingPath(resolveRadioToolPath());
 const library = new LibraryManager(radioToolPath);
+const studioState = new StudioStateStore();
 const tunnel = new TunnelManager();
 let source: IcecastSourceConnection;
 let playout: DirectMp3Playout;
@@ -44,6 +46,7 @@ async function main() {
 	runtime = await ensureIcecastRuntime();
 	await startIcecast(runtime);
 	cloudflaredAvailable = await hasCloudflared();
+	await restoreBroadcastLibrary();
 	status = createStatus();
 	source = new IcecastSourceConnection(runtime, STATION_NAME, (connected) => {
 		status.sourceConnected = connected;
@@ -110,6 +113,21 @@ function createStudioApp() {
 	});
 
 	app.get('/api/status', (_request, response) => response.json(currentStatus()));
+	app.get('/api/studio-state', (_request, response) => response.json(studioState.get()));
+	app.patch('/api/studio-state', async (request, response, next) => {
+		try {
+			response.json(
+				await studioState.update({
+					ordered: typeof request.body.ordered === 'boolean' ? request.body.ordered : undefined,
+					broadcastRecursive:
+						typeof request.body.broadcastRecursive === 'boolean' ? request.body.broadcastRecursive : undefined,
+					prepDirectory: typeof request.body.prepDirectory === 'string' ? request.body.prepDirectory : undefined
+				})
+			);
+		} catch (error) {
+			next(error);
+		}
+	});
 	app.get('/api/now-playing', (_request, response) => response.json(nowPlaying));
 	app.post('/api/now-playing', (request, response) => {
 		nowPlaying = {
@@ -133,11 +151,13 @@ function createStudioApp() {
 	});
 	app.post('/api/library/scan', async (request, response, next) => {
 		try {
-			response.json(
-				await library.scan(String(request.body.directory ?? ''), {
-					recursive: Boolean(request.body.recursive)
-				})
-			);
+			const recursive = Boolean(request.body.recursive);
+			const state = await library.scanBroadcast(String(request.body.directory ?? ''), { recursive });
+			await studioState.update({
+				broadcastDirectory: state.directory,
+				broadcastRecursive: recursive
+			});
+			response.json(state);
 		} catch (error) {
 			next(error);
 		}
@@ -158,7 +178,7 @@ function createStudioApp() {
 				return;
 			}
 			response.type('audio/mpeg');
-			response.sendFile(track.cachePath, { dotfiles: 'allow' });
+			response.sendFile(track.playPath, { dotfiles: 'allow' });
 		} catch (error) {
 			next(error);
 		}
@@ -280,15 +300,15 @@ function attachSourceSocket(server: ReturnType<typeof createServer>) {
 						startedAt: status.startedAt ?? new Date().toISOString()
 					};
 				} else if (message.type === 'stop') {
-					source.disconnect();
+					markOffAir();
 				}
 				return;
 			}
 
 			source.write(Buffer.isBuffer(data) ? data : Buffer.from(data as ArrayBuffer));
 		});
-		socket.on('close', () => source.disconnect());
-		socket.on('error', () => source.disconnect());
+		socket.on('close', () => markOffAir());
+		socket.on('error', () => markOffAir());
 	});
 }
 
@@ -326,6 +346,31 @@ function publicStatus(request: express.Request): BroadcastStatus {
 
 function listenerBaseUrl(): string {
 	return tunnel.getListenerUrl(`http://127.0.0.1:${PUBLIC_PORT}`);
+}
+
+async function restoreBroadcastLibrary(): Promise<void> {
+	const saved = await studioState.load();
+	if (!saved.broadcastDirectory) {
+		return;
+	}
+
+	try {
+		await library.scanBroadcast(saved.broadcastDirectory, { recursive: saved.broadcastRecursive });
+	} catch (error) {
+		console.warn(`[library] could not restore ${saved.broadcastDirectory}: ${error instanceof Error ? error.message : error}`);
+	}
+}
+
+function markOffAir(): void {
+	source?.disconnect();
+	status = createStatus();
+	nowPlaying = {
+		trackId: null,
+		title: 'Off air',
+		artist: STATION_NAME,
+		startedAt: null,
+		duration: null
+	};
 }
 
 async function resolveExistingPath(filePath: string | null): Promise<string | null> {

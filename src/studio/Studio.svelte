@@ -4,7 +4,6 @@
 		FolderOpen,
 		ListMusic,
 		Mic,
-		Radio,
 		RefreshCw,
 		Shuffle,
 		SkipForward,
@@ -18,23 +17,32 @@
 		getLibrary,
 		getNowPlaying,
 		getStatus,
+		getStudioState,
 		getTunnel,
 		pickFolder,
-		prepareLibrary,
 		scanLibrary,
-		skipBroadcast,
-		startBroadcast,
 		startTunnel,
 		stopBroadcast,
-		stopTunnel
+		stopTunnel,
+		updateNowPlaying,
+		updateStudioState
 	} from '../lib/api';
+	import { StudioEngine } from '../lib/audio/studioEngine';
 	import type { BroadcastStatus, LibraryState, NowPlaying, ServerConfig, Track, TunnelState } from '../lib/types';
 
 	let config: ServerConfig | null = null;
-	let library: LibraryState = { directory: '', tracks: [], preparing: false, lastScanAt: null };
+	let library: LibraryState = {
+		directory: '',
+		tracks: [],
+		preparing: false,
+		lastScanAt: null,
+		recursive: false,
+		sourceKind: 'empty'
+	};
 	let status: BroadcastStatus | null = null;
 	let tunnel: TunnelState = { running: false, url: null, startedAt: null, error: null, mode: null, hostname: null, configured: false };
 	let directoryInput = '';
+	let libraryRecursive = false;
 	let queue: Track[] = [];
 	let nowPlaying: NowPlaying | null = null;
 	let ordered = false;
@@ -46,8 +54,9 @@
 	let duckingDb = -12;
 	let monitor = false;
 	let micLatched = false;
+	let micHeld = false;
 	let pollTimer: number | undefined;
-	const directPlayout = true;
+	const engine = new StudioEngine();
 
 	$: readyTracks = library.tracks.filter((track) => track.cacheReady);
 	$: missingCount = library.tracks.filter((track) => !track.cacheReady).length;
@@ -65,18 +74,27 @@
 		if (pollTimer) {
 			window.clearInterval(pollTimer);
 		}
+		void engine.stop();
 	});
 
 	async function refreshAll() {
 		try {
-			[config, library, status, tunnel, nowPlaying] = await Promise.all([
+			const [nextConfig, nextLibrary, nextStatus, nextTunnel, nextNowPlaying, studioState] = await Promise.all([
 				getConfig(),
 				getLibrary(),
 				getStatus(),
 				getTunnel(),
-				getNowPlaying()
+				getNowPlaying(),
+				getStudioState()
 			]);
-			directoryInput = library.directory;
+			config = nextConfig;
+			library = nextLibrary;
+			status = nextStatus;
+			tunnel = nextTunnel;
+			nowPlaying = nextNowPlaying;
+			ordered = studioState.ordered;
+			libraryRecursive = studioState.broadcastRecursive;
+			directoryInput = library.directory || studioState.broadcastDirectory;
 			buildQueue();
 		} catch (error) {
 			setError(error);
@@ -109,20 +127,8 @@
 		errorMessage = '';
 		busyMessage = 'Scanning library';
 		try {
-			library = await scanLibrary(directoryInput);
-			buildQueue();
-		} catch (error) {
-			setError(error);
-		} finally {
-			busyMessage = '';
-		}
-	}
-
-	async function prepare() {
-		errorMessage = '';
-		busyMessage = 'Preparing radio copies';
-		try {
-			library = await prepareLibrary();
+			library = await scanLibrary(directoryInput, libraryRecursive);
+			await updateStudioState({ broadcastRecursive: libraryRecursive });
 			buildQueue();
 		} catch (error) {
 			setError(error);
@@ -134,6 +140,9 @@
 	function buildQueue() {
 		const tracks = [...readyTracks];
 		queue = ordered ? tracks : shuffleTracks(tracks);
+		if (onAir && queue.length > 0) {
+			engine.setQueue(queue);
+		}
 	}
 
 	async function goOnAir() {
@@ -157,11 +166,26 @@
 		}
 
 		try {
-			busyMessage = 'Starting direct MP3 playout';
-			status = await startBroadcast(queue.map((track) => track.id));
+			busyMessage = 'Starting live mixer';
+			await engine.start(queue, getEngineOptions(), {
+				onTrack: handleTrackChange,
+				onLevel: (level) => {
+					outputLevel = level;
+				},
+				onError: (message) => {
+					errorMessage = message;
+				},
+				onSourceState: (connected) => {
+					if (status) {
+						status = { ...status, sourceConnected: connected };
+					}
+				}
+			});
+			status = await getStatus();
 			nowPlaying = await getNowPlaying();
 			outputLevel = 0.72;
 		} catch (error) {
+			await engine.stop();
 			await stopBroadcast();
 			setError(error);
 		} finally {
@@ -170,28 +194,86 @@
 	}
 
 	async function goOffAir() {
+		await engine.stop();
 		micLatched = false;
+		micHeld = false;
 		status = await stopBroadcast();
 		nowPlaying = null;
 		outputLevel = 0.05;
 	}
 
-	async function skipTrack() {
-		status = await skipBroadcast();
-		window.setTimeout(() => {
-			void getNowPlaying().then((program) => {
-				nowPlaying = program;
-			});
-		}, 350);
+	function skipTrack() {
+		engine.skip();
 	}
 
-	function setMic(_open: boolean) {}
+	function setMic(open: boolean) {
+		micHeld = open;
+		applyMicState();
+	}
 
 	function toggleLatch() {
 		micLatched = !micLatched;
+		applyMicState();
 	}
 
-	function applyAudioOptions() {}
+	function applyAudioOptions() {
+		engine.setOptions(getEngineOptions());
+	}
+
+	function applyMicState() {
+		engine.setMicOpen(micHeld || micLatched);
+	}
+
+	async function handleTrackChange(track: Track) {
+		nowPlaying = {
+			trackId: track.id,
+			title: track.title,
+			artist: track.artist,
+			startedAt: new Date().toISOString(),
+			duration: track.duration
+		};
+		try {
+			nowPlaying = await updateNowPlaying({
+				trackId: track.id,
+				title: track.title,
+				artist: track.artist,
+				duration: track.duration
+			});
+		} catch {
+			// Local display should keep moving even if a metadata update races the source socket.
+		}
+	}
+
+	async function playTrack(track: Track) {
+		if (!track.cacheReady) {
+			return;
+		}
+		if (onAir) {
+			try {
+				await engine.playNow(track);
+			} catch (error) {
+				setError(error);
+			}
+			return;
+		}
+		queue = [track, ...readyTracks.filter((candidate) => candidate.id !== track.id)];
+	}
+
+	async function toggleOrderMode() {
+		ordered = !ordered;
+		buildQueue();
+		await updateStudioState({ ordered });
+	}
+
+	function getEngineOptions() {
+		return {
+			bitrateKbps: config?.bitrateKbps ?? 64,
+			musicVolume: Number(musicVolume),
+			micVolume: Number(micVolume),
+			duckingDb: Number(duckingDb),
+			monitor
+		};
+	}
 
 	async function toggleTunnel() {
 		try {
@@ -254,7 +336,7 @@
 			<div class="panel-head">
 				<div>
 					<span class="eyebrow">library</span>
-					<h2>Broadcast copies</h2>
+					<h2>Broadcast library</h2>
 				</div>
 				<button class="icon-button" type="button" aria-label="Refresh" on:click={refreshAll}>
 					<RefreshCw />
@@ -262,8 +344,12 @@
 			</div>
 
 			<label class="field">
-				<span>Music folder</span>
+				<span>Broadcast folder</span>
 				<input bind:value={directoryInput} placeholder="C:\Music\saru2radio" />
+			</label>
+			<label class="toggle compact-toggle">
+				<input type="checkbox" bind:checked={libraryRecursive} on:change={() => updateStudioState({ broadcastRecursive: libraryRecursive })} />
+				<span>Include subfolders</span>
 			</label>
 
 			<div class="action-row">
@@ -275,21 +361,25 @@
 					<ListMusic />
 					Scan
 				</button>
-				<button class="solid-button" type="button" disabled={library.preparing || library.tracks.length === 0} on:click={prepare}>
-					<Radio />
-					Prepare
-				</button>
 			</div>
 
 			<div class="library-stats">
 				<span>{library.tracks.length} tracks</span>
-				<span>{readyTracks.length} ready</span>
+				<span>{readyTracks.length} ready to air</span>
 				<span>{missingCount} pending</span>
 			</div>
 
 			<div class="track-list" aria-label="Track list">
 				{#each library.tracks as track (track.id)}
-					<div class:ready={track.cacheReady} class:error={Boolean(track.error)} class="track-row">
+					<button
+						class:active={nowPlaying?.trackId === track.id}
+						class:ready={track.cacheReady}
+						class:error={Boolean(track.error)}
+						class="track-row"
+						type="button"
+						disabled={!track.cacheReady}
+						on:click={() => playTrack(track)}
+					>
 						<div>
 							<strong>{track.title}</strong>
 							<span>{track.artist}</span>
@@ -298,10 +388,10 @@
 							{/if}
 						</div>
 						<time>{formatDuration(track.duration)}</time>
-					</div>
+					</button>
 				{/each}
 				{#if library.tracks.length === 0}
-					<p class="empty-note">Choose a folder and scan local audio files.</p>
+					<p class="empty-note">Choose a broadcast folder and scan local MP3 files.</p>
 				{/if}
 			</div>
 		</aside>
@@ -338,7 +428,7 @@
 				<button class="icon-button" type="button" disabled={!onAir} aria-label="Skip track" on:click={skipTrack}>
 					<SkipForward />
 				</button>
-				<button class="tool-button" type="button" on:click={() => { ordered = !ordered; buildQueue(); }}>
+				<button class="tool-button" type="button" on:click={toggleOrderMode}>
 					<Shuffle />
 					{ordered ? 'Ordered' : 'Shuffle'}
 				</button>
@@ -371,7 +461,7 @@
 					class:latched={micLatched}
 					class="mic-button"
 					type="button"
-					disabled={!onAir || directPlayout}
+					disabled={!onAir}
 					on:mousedown={() => setMic(true)}
 					on:mouseup={() => setMic(false)}
 					on:mouseleave={() => setMic(false)}
@@ -381,25 +471,25 @@
 					<Mic />
 					Hold mic
 				</button>
-				<button class="tool-button" type="button" disabled={!onAir || directPlayout} on:click={toggleLatch}>
+				<button class="tool-button" type="button" disabled={!onAir} on:click={toggleLatch}>
 					{micLatched ? 'Unlatch' : 'Latch'}
 				</button>
 			</div>
 
 			<label class="range">
 				<span>Music</span>
-				<input type="range" min="0" max="1.2" step="0.01" bind:value={musicVolume} disabled={directPlayout} on:input={applyAudioOptions} />
+				<input type="range" min="0" max="1.2" step="0.01" bind:value={musicVolume} on:input={applyAudioOptions} />
 			</label>
 			<label class="range">
 				<span>Mic</span>
-				<input type="range" min="0" max="1.4" step="0.01" bind:value={micVolume} disabled={directPlayout} on:input={applyAudioOptions} />
+				<input type="range" min="0" max="1.4" step="0.01" bind:value={micVolume} on:input={applyAudioOptions} />
 			</label>
 			<label class="range">
 				<span>Ducking {duckingDb} dB</span>
-				<input type="range" min="-24" max="-3" step="1" bind:value={duckingDb} disabled={directPlayout} on:input={applyAudioOptions} />
+				<input type="range" min="-24" max="-3" step="1" bind:value={duckingDb} on:input={applyAudioOptions} />
 			</label>
 			<label class="toggle">
-				<input type="checkbox" bind:checked={monitor} disabled={directPlayout} on:change={applyAudioOptions} />
+				<input type="checkbox" bind:checked={monitor} on:change={applyAudioOptions} />
 				<span>Local monitor</span>
 			</label>
 
@@ -558,15 +648,23 @@
 		display: grid;
 		grid-template-columns: minmax(0, 1fr) auto;
 		gap: 12px;
+		width: 100%;
 		padding: 9px;
 		border: 1px solid var(--line);
 		border-radius: 4px;
 		background: rgba(255, 255, 255, 0.35);
+		color: var(--ink);
 		opacity: 0.58;
+		text-align: left;
 	}
 
 	.track-row.ready {
 		opacity: 1;
+	}
+
+	.track-row.active {
+		border-color: rgba(31, 118, 108, 0.46);
+		background: rgba(31, 118, 108, 0.08);
 	}
 
 	.track-row.error {
@@ -757,6 +855,11 @@
 		gap: 8px;
 		color: var(--ink-dim);
 		font-size: 12px;
+	}
+
+	.compact-toggle {
+		margin-top: -6px;
+		font-size: 11px;
 	}
 
 	.toggle input {

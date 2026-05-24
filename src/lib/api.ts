@@ -1,4 +1,4 @@
-import type { BroadcastStatus, LibraryState, NowPlaying, ServerConfig, TunnelState } from './types';
+import type { BroadcastStatus, LibraryState, NowPlaying, ServerConfig, StudioState, TunnelState } from './types';
 
 async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
 	const response = await fetch(path, {
@@ -29,10 +29,21 @@ export function pickFolder(): Promise<{ directory: string }> {
 	return requestJson<{ directory: string }>('/api/library/pick-folder', { method: 'POST' });
 }
 
-export function scanLibrary(directory: string): Promise<LibraryState> {
+export function scanLibrary(directory: string, recursive = false): Promise<LibraryState> {
 	return requestJson<LibraryState>('/api/library/scan', {
 		method: 'POST',
-		body: JSON.stringify({ directory })
+		body: JSON.stringify({ directory, recursive })
+	});
+}
+
+export function getStudioState(): Promise<StudioState> {
+	return requestJson<StudioState>('/api/studio-state');
+}
+
+export function updateStudioState(patch: Partial<StudioState>): Promise<StudioState> {
+	return requestJson<StudioState>('/api/studio-state', {
+		method: 'PATCH',
+		body: JSON.stringify(patch)
 	});
 }
 
