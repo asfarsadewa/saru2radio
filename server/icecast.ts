@@ -133,6 +133,9 @@ export class IcecastSourceConnection {
 			}
 		});
 
+		this.request.on('socket', (socket) => {
+			socket.setNoDelay(true);
+		});
 		this.request.on('response', (response) => {
 			if ((response.statusCode ?? 500) >= 300) {
 				this.connected = false;

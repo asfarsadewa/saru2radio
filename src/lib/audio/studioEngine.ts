@@ -1,6 +1,8 @@
 import { LiveMp3Encoder, TARGET_SAMPLE_RATE } from './liveMp3';
 import type { Track } from '../types';
 
+const MIXER_BUFFER_SIZE = 4096;
+
 type EngineCallbacks = {
 	onTrack(track: Track): void;
 	onLevel(level: number): void;
@@ -188,7 +190,7 @@ export class StudioEngine {
 		this.analyserData = new Uint8Array(this.analyser.fftSize);
 		limiter.connect(this.analyser);
 
-		this.processor = this.context.createScriptProcessor(8192, 1, 1);
+		this.processor = this.context.createScriptProcessor(MIXER_BUFFER_SIZE, 1, 1);
 		this.processor.onaudioprocess = (event) => {
 			const input = event.inputBuffer.getChannelData(0);
 			const output = event.outputBuffer.getChannelData(0);

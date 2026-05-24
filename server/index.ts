@@ -16,6 +16,7 @@ import {
 import { LibraryManager, resolveRadioToolPath } from './library.js';
 import { DIST_DIR } from './paths.js';
 import { DirectMp3Playout } from './playout.js';
+import { SourceStreamPacer } from './source-pacer.js';
 import { StudioStateStore } from './studio-state.js';
 import { hasCloudflared, TunnelManager } from './tunnel.js';
 
@@ -288,27 +289,40 @@ function createPublicApp() {
 function attachSourceSocket(server: ReturnType<typeof createServer>) {
 	const socketServer = new WebSocketServer({ server, path: '/source' });
 	socketServer.on('connection', (socket) => {
+		let pacer: SourceStreamPacer | null = null;
+		const stopLiveSource = () => {
+			pacer?.stop();
+			pacer = null;
+			markOffAir();
+		};
 		socket.on('message', (data, isBinary) => {
 			if (!isBinary) {
-				const message = JSON.parse(data.toString()) as { type?: string };
+				const message = JSON.parse(data.toString()) as { type?: string; bitrateKbps?: number };
 				if (message.type === 'start') {
 					playout.stop(false);
 					source.connect();
+					pacer?.stop();
+					pacer = new SourceStreamPacer(source, message.bitrateKbps ?? BITRATE_KBPS);
 					status = {
 						...status,
 						onAir: true,
 						startedAt: status.startedAt ?? new Date().toISOString()
 					};
 				} else if (message.type === 'stop') {
-					markOffAir();
+					stopLiveSource();
 				}
 				return;
 			}
 
-			source.write(Buffer.isBuffer(data) ? data : Buffer.from(data as ArrayBuffer));
+			const chunk = Buffer.isBuffer(data) ? data : Buffer.from(data as ArrayBuffer);
+			if (pacer) {
+				pacer.push(chunk);
+			} else {
+				source.write(chunk);
+			}
 		});
-		socket.on('close', () => markOffAir());
-		socket.on('error', () => markOffAir());
+		socket.on('close', stopLiveSource);
+		socket.on('error', stopLiveSource);
 	});
 }
 
