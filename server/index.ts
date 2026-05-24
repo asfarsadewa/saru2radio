@@ -99,7 +99,7 @@ function createStudioApp() {
 		const config: ServerConfig = {
 			stationName: STATION_NAME,
 			studioUrl: `http://127.0.0.1:${STUDIO_PORT}`,
-			listenerUrl: `http://127.0.0.1:${PUBLIC_PORT}`,
+			listenerUrl: listenerBaseUrl(),
 			icecastUrl: `http://${runtime.host}:${runtime.port}${runtime.mount}`,
 			mount: runtime.mount,
 			bitrateKbps: BITRATE_KBPS,
@@ -295,11 +295,11 @@ function attachSourceSocket(server: ReturnType<typeof createServer>) {
 function createStatus(): BroadcastStatus {
 	return {
 		onAir: false,
-		streamUrl: `http://127.0.0.1:${PUBLIC_PORT}/live.mp3`,
+		streamUrl: `${listenerBaseUrl()}/live.mp3`,
 		stationName: STATION_NAME,
 		startedAt: null,
 		icecastUrl: `http://${runtime.host}:${runtime.port}${runtime.mount}`,
-		listenerUrl: `http://127.0.0.1:${PUBLIC_PORT}`,
+		listenerUrl: listenerBaseUrl(),
 		tunnelUrl: tunnel.getState().url,
 		sourceConnected: false
 	};
@@ -322,6 +322,10 @@ function publicStatus(request: express.Request): BroadcastStatus {
 		listenerUrl: `${protocol}://${host}`,
 		icecastUrl: ''
 	};
+}
+
+function listenerBaseUrl(): string {
+	return tunnel.getListenerUrl(`http://127.0.0.1:${PUBLIC_PORT}`);
 }
 
 async function resolveExistingPath(filePath: string | null): Promise<string | null> {

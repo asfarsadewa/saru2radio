@@ -60,10 +60,10 @@
 	<header class="listener-header">
 		<div>
 			<h1 class="wordmark">saru2radio</h1>
-			<span class="eyebrow">temporary shortwave service</span>
+			<span class="eyebrow">shortwave listener service</span>
 		</div>
 		<span class="status-pill">
-			<span class:live={onAir} class="status-dot"></span>
+			<span class:live={onAir} class:offline={!onAir} class="status-dot"></span>
 			{onAir ? 'ON AIR' : 'OFF AIR'}
 		</span>
 	</header>

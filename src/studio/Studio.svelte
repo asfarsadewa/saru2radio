@@ -33,7 +33,7 @@
 	let config: ServerConfig | null = null;
 	let library: LibraryState = { directory: '', tracks: [], preparing: false, lastScanAt: null };
 	let status: BroadcastStatus | null = null;
-	let tunnel: TunnelState = { running: false, url: null, startedAt: null, error: null };
+	let tunnel: TunnelState = { running: false, url: null, startedAt: null, error: null, mode: null, hostname: null, configured: false };
 	let directoryInput = '';
 	let queue: Track[] = [];
 	let nowPlaying: NowPlaying | null = null;
@@ -238,11 +238,11 @@
 		</div>
 		<div class="header-status">
 			<span class="status-pill">
-				<span class:live={onAir} class:ready={!onAir && readyTracks.length > 0} class="status-dot"></span>
+				<span class:live={onAir} class:offline={!onAir} class="status-dot"></span>
 				{onAir ? 'ON AIR' : readyTracks.length > 0 ? 'READY' : 'OFF AIR'}
 			</span>
 			<span class="status-pill">
-				<span class:ready={sourceConnected} class="status-dot"></span>
+				<span class:ready={sourceConnected} class:offline={!sourceConnected} class="status-dot"></span>
 				ICECAST
 			</span>
 			<span class="status-pill">{config?.bitrateKbps ?? 64} KBPS / 22.05 KHZ</span>

@@ -109,11 +109,16 @@ select:focus-visible {
 	height: 7px;
 	flex: 0 0 7px;
 	border-radius: 50%;
-	background: var(--amber);
-	box-shadow: 0 0 0 3px rgba(213, 166, 66, 0.18);
+	background: var(--signal);
+	box-shadow: 0 0 0 3px rgba(181, 31, 36, 0.18);
 }
 
 .status-dot.live {
+	background: var(--green);
+	box-shadow: 0 0 0 3px rgba(31, 118, 108, 0.16);
+}
+
+.status-dot.offline {
 	background: var(--signal);
 	box-shadow: 0 0 0 3px rgba(181, 31, 36, 0.18);
 }

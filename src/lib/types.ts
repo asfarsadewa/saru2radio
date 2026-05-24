@@ -55,4 +55,7 @@ export type TunnelState = {
 	url: string | null;
 	startedAt: string | null;
 	error: string | null;
+	mode: 'quick' | 'named' | null;
+	hostname: string | null;
+	configured: boolean;
 };
