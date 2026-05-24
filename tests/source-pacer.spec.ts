@@ -60,4 +60,23 @@ describe('SourceStreamPacer', () => {
 
 		pacer.stop();
 	});
+
+	it('can flush buffered bytes when a talk break ends', () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(0);
+		const { chunks, writer } = createWriter();
+		const pacer = new SourceStreamPacer(writer, 64, {
+			tickMs: 100,
+			prebufferSeconds: 10,
+			maxWaitMs: 5000,
+			minBytesPerTick: 0
+		});
+
+		pacer.push(Buffer.from([1, 2]));
+		pacer.push(Buffer.from([3]));
+		pacer.flush();
+
+		expect(Buffer.concat(chunks)).toEqual(Buffer.from([1, 2, 3]));
+		pacer.stop();
+	});
 });

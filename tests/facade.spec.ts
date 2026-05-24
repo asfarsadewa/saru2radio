@@ -5,7 +5,7 @@ test('studio dashboard renders local booth controls', async ({ page }) => {
 	await expect(page.getByRole('heading', { name: 'saru2radio' })).toBeVisible();
 	await expect(page.getByRole('button', { name: /ON AIR/i })).toBeVisible();
 	await expect(page.getByText('Broadcast library')).toBeVisible();
-	await expect(page.getByRole('button', { name: /Hold mic/i })).toBeDisabled();
+	await expect(page.getByRole('button', { name: /No mic/i })).toBeDisabled();
 });
 
 test('public facade renders listener page and hides studio API', async ({ page, request }) => {

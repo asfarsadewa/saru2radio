@@ -58,6 +58,10 @@ export class SourceStreamPacer {
 		this.bufferedBytes = 0;
 	}
 
+	flush(): void {
+		this.writeBytes(this.bufferedBytes);
+	}
+
 	private drain(): void {
 		if (this.bufferedBytes === 0) {
 			return;

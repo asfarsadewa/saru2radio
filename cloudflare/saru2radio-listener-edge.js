@@ -16,6 +16,9 @@ export default {
 				if (url.pathname === '/status.json') {
 					return publicStatusResponse(response);
 				}
+				if (url.pathname === '/live.mp3') {
+					return publicStreamResponse(response);
+				}
 				return response;
 			}
 
@@ -37,6 +40,17 @@ async function publicStatusResponse(response) {
 		icecastUrl: '',
 		listenerUrl: PUBLIC_ORIGIN,
 		tunnelUrl: status.tunnelUrl ? PUBLIC_ORIGIN : null
+	});
+}
+
+function publicStreamResponse(response) {
+	const headers = new Headers(response.headers);
+	headers.set('content-type', 'audio/mpeg');
+	headers.set('cache-control', 'no-store, no-transform');
+	return new Response(response.body, {
+		status: response.status,
+		statusText: response.statusText,
+		headers
 	});
 }
 

@@ -21,6 +21,8 @@
 		getTunnel,
 		pickFolder,
 		scanLibrary,
+		skipBroadcast,
+		startBroadcast,
 		startTunnel,
 		stopBroadcast,
 		stopTunnel,
@@ -29,6 +31,8 @@
 	} from '../lib/api';
 	import { StudioEngine, type MicCaptureState, type MicColorMode } from '../lib/audio/studioEngine';
 	import type { BroadcastStatus, LibraryState, NowPlaying, ServerConfig, Track, TunnelState } from '../lib/types';
+
+	type BroadcastMode = 'direct' | 'mixer';
 
 	let config: ServerConfig | null = null;
 	let library: LibraryState = {
@@ -60,6 +64,8 @@
 	let micVolume = 0.92;
 	let duckingDb = -12;
 	let monitor = false;
+	let broadcastMode: BroadcastMode = 'direct';
+	let activeBroadcastMode: BroadcastMode | null = null;
 	let micLatched = false;
 	let micHeld = false;
 	let micOpen = false;
@@ -75,9 +81,12 @@
 	$: levelStyle = `--level: ${outputLevel.toFixed(3)};`;
 	$: micOpen = micHeld || micLatched;
 	$: micLevelStyle = `--mic-level: ${micLevel.toFixed(3)};`;
-	$: micButtonLabel = micOpen ? (micReady && !micMuted ? 'Mic open' : 'No mic') : 'Hold mic';
-	$: micStatusLabel = micReady ? (micMuted ? 'MIC MUTED' : 'MIC READY') : 'MIC NOT CONNECTED';
-	$: micDetail = micMessage || micLabel || 'Choose an input, then go on air.';
+	$: mixerOnAir = activeBroadcastMode === 'mixer';
+	$: directOnAir = activeBroadcastMode === 'direct';
+	$: micButtonDisabled = !onAir || !micReady || micMuted;
+	$: micButtonLabel = !micReady || micMuted ? 'No mic' : micOpen ? (directOnAir ? 'Talking' : 'Mic open') : directOnAir ? 'Hold talk' : 'Hold mic';
+	$: micStatusLabel = micReady ? (micMuted ? 'MIC MUTED' : directOnAir ? 'TALK BREAK READY' : 'MIC READY') : 'MIC NOT CONNECTED';
+	$: micDetail = micMessage || micLabel || (directOnAir ? 'Hold to pause songs and talk.' : 'Choose an input, then go on air.');
 
 	onMount(async () => {
 		await refreshAll();
@@ -155,7 +164,7 @@
 	function buildQueue() {
 		const tracks = [...readyTracks];
 		queue = ordered ? tracks : shuffleTracks(tracks);
-		if (onAir && queue.length > 0) {
+		if (mixerOnAir && queue.length > 0) {
 			engine.setQueue(queue);
 		}
 	}
@@ -181,34 +190,35 @@
 		}
 
 		try {
-			busyMessage = 'Starting live mixer';
-			await engine.start(queue, getEngineOptions(), {
-				onTrack: handleTrackChange,
-				onLevel: (level) => {
-					outputLevel = level;
-				},
-				onMicLevel: (level) => {
-					micLevel = level;
-				},
-				onMicState: (state) => {
-					applyMicCaptureState(state);
-				},
-				onError: (message) => {
-					errorMessage = message;
-				},
-				onSourceState: (connected) => {
-					if (status) {
-						status = { ...status, sourceConnected: connected };
-					}
+			if (broadcastMode === 'direct') {
+				busyMessage = 'Starting direct stream';
+				await engine.stop();
+				status = await startBroadcast(queue.map((track) => track.id));
+				activeBroadcastMode = 'direct';
+				micLatched = false;
+				micHeld = false;
+				micReady = false;
+				micLevel = 0;
+				outputLevel = 0.72;
+				try {
+					await engine.startTalkBreak(getEngineOptions(), getEngineCallbacks());
+					await refreshMicrophones();
+				} catch (error) {
+					setError(error);
 				}
-			});
-			status = await getStatus();
+			} else {
+				busyMessage = 'Starting DJ mixer';
+				await engine.start(queue, getEngineOptions(), getEngineCallbacks());
+				activeBroadcastMode = 'mixer';
+				status = await getStatus();
+				await refreshMicrophones();
+				outputLevel = 0.72;
+			}
 			nowPlaying = await getNowPlaying();
-			await refreshMicrophones();
-			outputLevel = 0.72;
 		} catch (error) {
 			await engine.stop();
 			await stopBroadcast();
+			activeBroadcastMode = null;
 			setError(error);
 		} finally {
 			busyMessage = '';
@@ -225,11 +235,17 @@
 		micMessage = '';
 		micMuted = false;
 		status = await stopBroadcast();
+		activeBroadcastMode = null;
 		nowPlaying = null;
 		outputLevel = 0.05;
 	}
 
-	function skipTrack() {
+	async function skipTrack() {
+		if (activeBroadcastMode === 'direct') {
+			status = await skipBroadcast();
+			nowPlaying = await getNowPlaying();
+			return;
+		}
 		engine.skip();
 	}
 
@@ -263,6 +279,10 @@
 
 	async function retryMic() {
 		errorMessage = '';
+		closeMicControl();
+		micReady = false;
+		micLevel = 0;
+		micMessage = 'Requesting microphone access.';
 		try {
 			await engine.retryMicrophone();
 			await refreshMicrophones();
@@ -273,6 +293,10 @@
 
 	async function changeMicDevice() {
 		errorMessage = '';
+		closeMicControl();
+		micReady = false;
+		micLevel = 0;
+		micMessage = 'Switching microphone input.';
 		try {
 			await engine.selectMicrophone(selectedMicId);
 			await refreshMicrophones();
@@ -281,8 +305,37 @@
 		}
 	}
 
+	function closeMicControl() {
+		micHeld = false;
+		micLatched = false;
+		engine.setMicOpen(false);
+	}
+
 	function applyMicState() {
 		engine.setMicOpen(micHeld || micLatched);
+	}
+
+	function getEngineCallbacks() {
+		return {
+			onTrack: handleTrackChange,
+			onLevel: (level: number) => {
+				outputLevel = level;
+			},
+			onMicLevel: (level: number) => {
+				micLevel = level;
+			},
+			onMicState: (state: MicCaptureState) => {
+				applyMicCaptureState(state);
+			},
+			onError: (message: string) => {
+				errorMessage = message;
+			},
+			onSourceState: (connected: boolean) => {
+				if (status) {
+					status = { ...status, sourceConnected: connected };
+				}
+			}
+		};
 	}
 
 	function applyMicCaptureState(state: MicCaptureState) {
@@ -333,6 +386,12 @@
 			return;
 		}
 		if (onAir) {
+			if (activeBroadcastMode === 'direct') {
+				queue = [track, ...readyTracks.filter((candidate) => candidate.id !== track.id)];
+				status = await startBroadcast(queue.map((candidate) => candidate.id));
+				nowPlaying = await getNowPlaying();
+				return;
+			}
 			try {
 				await engine.playNow(track);
 			} catch (error) {
@@ -518,6 +577,10 @@
 					<Shuffle />
 					{ordered ? 'Ordered' : 'Shuffle'}
 				</button>
+				<select class="mode-select" bind:value={broadcastMode} disabled={onAir} aria-label="Broadcast mode">
+					<option value="direct">Direct songs</option>
+					<option value="mixer">DJ mixer</option>
+				</select>
 			</div>
 
 			<div class="facade panel">
@@ -550,7 +613,7 @@
 					class:missing={micOpen && (!micReady || micMuted)}
 					class="mic-button"
 					type="button"
-					disabled={!onAir}
+					disabled={micButtonDisabled}
 					on:pointerdown={beginMicHold}
 					on:pointerup={endMicHold}
 					on:pointercancel={endMicHold}
@@ -558,9 +621,11 @@
 					<Mic />
 					{micButtonLabel}
 				</button>
-				<button class="tool-button" type="button" disabled={!onAir} on:click={toggleLatch}>
-					{micLatched ? 'Unlatch' : 'Latch'}
-				</button>
+				{#if broadcastMode === 'mixer' || mixerOnAir}
+					<button class="tool-button" type="button" disabled={!mixerOnAir} on:click={toggleLatch}>
+						{micLatched ? 'Unlatch' : 'Latch'}
+					</button>
+				{/if}
 			</div>
 
 			<div class="mic-select-grid">
@@ -598,7 +663,7 @@
 
 			<label class="range">
 				<span>Music</span>
-				<input type="range" min="0" max="1.2" step="0.01" bind:value={musicVolume} on:input={applyAudioOptions} />
+				<input type="range" min="0" max="1.2" step="0.01" bind:value={musicVolume} disabled={directOnAir} on:input={applyAudioOptions} />
 			</label>
 			<label class="range">
 				<span>Mic</span>
@@ -606,7 +671,7 @@
 			</label>
 			<label class="range">
 				<span>Ducking {duckingDb} dB</span>
-				<input type="range" min="-24" max="-3" step="1" bind:value={duckingDb} on:input={applyAudioOptions} />
+				<input type="range" min="-24" max="-3" step="1" bind:value={duckingDb} disabled={directOnAir} on:input={applyAudioOptions} />
 			</label>
 			<label class="toggle">
 				<input type="checkbox" bind:checked={monitor} on:change={applyAudioOptions} />
@@ -928,6 +993,15 @@
 	.broadcast-button :global(svg) {
 		width: 20px;
 		height: 20px;
+	}
+
+	.mode-select {
+		flex: 0 0 138px;
+		min-height: 58px;
+		font-size: 11px;
+		font-weight: 800;
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
 	}
 
 	.facade p {

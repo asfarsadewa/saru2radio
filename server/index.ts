@@ -23,7 +23,7 @@ import { hasCloudflared, TunnelManager } from './tunnel.js';
 const STATION_NAME = 'saru2radio';
 const STUDIO_PORT = Number(process.env.STUDIO_PORT ?? 8011);
 const PUBLIC_PORT = Number(process.env.PUBLIC_PORT ?? 8012);
-const BITRATE_KBPS = Number(process.env.RADIO_BITRATE_KBPS ?? 64);
+const BITRATE_KBPS = Number(process.env.RADIO_BITRATE_KBPS ?? 128);
 
 let runtime: IcecastRuntimeConfig;
 let status: BroadcastStatus;
@@ -79,7 +79,7 @@ async function main() {
 
 	const studioApp = createStudioApp();
 	const studioServer = createServer(studioApp);
-	attachSourceSocket(studioServer);
+	attachStudioSockets(studioServer);
 	studioServer.listen(STUDIO_PORT, '127.0.0.1', () => {
 		console.log(`saru2radio studio: http://127.0.0.1:${STUDIO_PORT}`);
 	});
@@ -255,6 +255,8 @@ function createPublicApp() {
 			return;
 		}
 
+		request.socket.setNoDelay(true);
+		response.socket?.setNoDelay(true);
 		const upstream = http.get(
 			{
 				host: runtime.host,
@@ -270,11 +272,17 @@ function createPublicApp() {
 				}
 				response.writeHead(200, {
 					'content-type': 'audio/mpeg',
-					'cache-control': 'no-store'
+					'cache-control': 'no-store, no-transform',
+					'connection': 'keep-alive',
+					'x-accel-buffering': 'no'
 				});
+				response.flushHeaders();
 				upstreamResponse.pipe(response);
 			}
 		);
+		upstream.on('socket', (socket) => {
+			socket.setNoDelay(true);
+		});
 		upstream.on('error', () => {
 			if (!response.headersSent) {
 				response.status(502).type('text/plain').send('Could not reach Icecast.');
@@ -286,8 +294,28 @@ function createPublicApp() {
 	return app;
 }
 
-function attachSourceSocket(server: ReturnType<typeof createServer>) {
-	const socketServer = new WebSocketServer({ server, path: '/source' });
+function attachStudioSockets(server: ReturnType<typeof createServer>) {
+	const sourceSocketServer = new WebSocketServer({ noServer: true });
+	const talkBreakSocketServer = new WebSocketServer({ noServer: true });
+
+	attachSourceSocket(sourceSocketServer);
+	attachTalkBreakSocket(talkBreakSocketServer);
+
+	server.on('upgrade', (request, socket, head) => {
+		const pathname = new URL(request.url ?? '/', 'http://127.0.0.1').pathname;
+		const socketServer = pathname === '/source' ? sourceSocketServer : pathname === '/talk-break' ? talkBreakSocketServer : null;
+		if (!socketServer) {
+			socket.destroy();
+			return;
+		}
+
+		socketServer.handleUpgrade(request, socket, head, (webSocket) => {
+			socketServer.emit('connection', webSocket, request);
+		});
+	});
+}
+
+function attachSourceSocket(socketServer: WebSocketServer) {
 	socketServer.on('connection', (socket) => {
 		let pacer: SourceStreamPacer | null = null;
 		const stopLiveSource = () => {
@@ -323,6 +351,47 @@ function attachSourceSocket(server: ReturnType<typeof createServer>) {
 		});
 		socket.on('close', stopLiveSource);
 		socket.on('error', stopLiveSource);
+	});
+}
+
+function attachTalkBreakSocket(socketServer: WebSocketServer) {
+	socketServer.on('connection', (socket) => {
+		let pacer: SourceStreamPacer | null = null;
+		const stopTalkBreak = () => {
+			if (pacer) {
+				pacer.flush();
+				pacer.stop();
+				pacer = null;
+			}
+			playout.resume();
+		};
+
+		socket.on('message', (data, isBinary) => {
+			if (!isBinary) {
+				const message = JSON.parse(data.toString()) as { type?: string; bitrateKbps?: number };
+				if (message.type === 'begin') {
+					if (!status.onAir || !playout.isRunning()) {
+						return;
+					}
+
+					stopTalkBreak();
+					playout.pause();
+					pacer = new SourceStreamPacer(source, message.bitrateKbps ?? BITRATE_KBPS, {
+						prebufferSeconds: 0.2,
+						maxWaitMs: 350,
+						minBytesPerTick: 256
+					});
+				} else if (message.type === 'end') {
+					stopTalkBreak();
+				}
+				return;
+			}
+
+			const chunk = Buffer.isBuffer(data) ? data : Buffer.from(data as ArrayBuffer);
+			pacer?.push(chunk);
+		});
+		socket.on('close', stopTalkBreak);
+		socket.on('error', stopTalkBreak);
 	});
 }
 

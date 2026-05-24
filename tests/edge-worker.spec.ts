@@ -46,6 +46,24 @@ describe('saru2radio listener edge Worker', () => {
 		vi.unstubAllGlobals();
 	});
 
+	it('marks live MP3 responses as non-transforming streams', async () => {
+		const fetchMock = vi.fn(
+			async () =>
+				new Response('mp3', {
+					status: 200,
+					headers: { 'content-type': 'audio/mpeg' }
+				})
+		);
+		vi.stubGlobal('fetch', fetchMock);
+
+		const response = await worker.fetch(new Request('https://saru2radio.com/live.mp3'));
+
+		expect(response.headers.get('content-type')).toBe('audio/mpeg');
+		expect(response.headers.get('cache-control')).toBe('no-store, no-transform');
+		expect(await response.text()).toBe('mp3');
+		vi.unstubAllGlobals();
+	});
+
 	it('rewrites healthy status responses to the public listener URL', async () => {
 		const fetchMock = vi.fn(
 			async () =>

@@ -133,6 +133,8 @@ export class StudioEngine {
 	private options: EngineOptions | null = null;
 	private running = false;
 	private micOpen = false;
+	private mode: 'mixer' | 'talk' | null = null;
+	private talkActive = false;
 	private skipRequested = false;
 
 	async start(queue: Track[], options: EngineOptions, callbacks: EngineCallbacks) {
@@ -150,6 +152,8 @@ export class StudioEngine {
 		this.currentIndex = 0;
 		this.running = true;
 		this.micOpen = false;
+		this.mode = 'mixer';
+		this.talkActive = false;
 
 		const AudioContextConstructor = window.AudioContext ?? window.webkitAudioContext;
 		if (!AudioContextConstructor) {
@@ -163,9 +167,18 @@ export class StudioEngine {
 
 		this.encoder = new LiveMp3Encoder(this.context.sampleRate, options.bitrateKbps);
 		this.socket = await openSourceSocket(options.bitrateKbps);
+		const sourceSocket = this.socket;
 		this.callbacks.onSourceState(true);
-		this.socket.addEventListener('close', () => this.callbacks?.onSourceState(false));
-		this.socket.addEventListener('error', () => this.callbacks?.onError('Source bridge connection failed.'));
+		sourceSocket.addEventListener('close', () => {
+			if (this.socket === sourceSocket && this.mode === 'mixer') {
+				this.callbacks?.onSourceState(false);
+			}
+		});
+		sourceSocket.addEventListener('error', () => {
+			if (this.socket === sourceSocket && this.mode === 'mixer') {
+				this.callbacks?.onError('Source bridge connection failed.');
+			}
+		});
 
 		const limiter = this.context.createDynamicsCompressor();
 		limiter.threshold.value = -6;
@@ -209,7 +222,79 @@ export class StudioEngine {
 		await this.playCurrentTrack();
 	}
 
+	async startTalkBreak(options: EngineOptions, callbacks: EngineCallbacks) {
+		if (this.running) {
+			await this.stop();
+		}
+
+		this.callbacks = callbacks;
+		this.options = options;
+		this.currentQueue = [];
+		this.currentIndex = 0;
+		this.running = true;
+		this.micOpen = false;
+		this.mode = 'talk';
+		this.talkActive = false;
+
+		const AudioContextConstructor = window.AudioContext ?? window.webkitAudioContext;
+		if (!AudioContextConstructor) {
+			throw new Error('Web Audio is not available in this browser.');
+		}
+
+		this.context = createAudioContext(AudioContextConstructor);
+		if (this.context.state === 'suspended') {
+			await this.context.resume();
+		}
+
+		this.socket = await openTalkBreakSocket();
+		const talkSocket = this.socket;
+		talkSocket.addEventListener('error', () => {
+			if (this.socket === talkSocket && this.mode === 'talk') {
+				this.callbacks?.onError('Talk break bridge connection failed.');
+			}
+		});
+
+		const limiter = this.context.createDynamicsCompressor();
+		limiter.threshold.value = -8;
+		limiter.knee.value = 10;
+		limiter.ratio.value = 10;
+		limiter.attack.value = 0.003;
+		limiter.release.value = 0.14;
+
+		this.micGain = this.context.createGain();
+		this.micGain.gain.value = 0;
+		this.micGain.connect(limiter);
+
+		await this.attachMicrophone();
+
+		this.analyser = this.context.createAnalyser();
+		this.analyser.fftSize = 512;
+		this.analyser.smoothingTimeConstant = 0.5;
+		this.analyserData = new Uint8Array(this.analyser.fftSize);
+		limiter.connect(this.analyser);
+
+		this.processor = this.context.createScriptProcessor(MIXER_BUFFER_SIZE, 1, 1);
+		this.processor.onaudioprocess = (event) => {
+			const input = event.inputBuffer.getChannelData(0);
+			const output = event.outputBuffer.getChannelData(0);
+			output.fill(0);
+			if (this.talkActive) {
+				this.sendEncoded(input);
+			}
+		};
+		limiter.connect(this.processor);
+		this.processor.connect(this.context.destination);
+
+		this.monitorGain = this.context.createGain();
+		this.monitorGain.gain.value = options.monitor ? 1 : 0;
+		limiter.connect(this.monitorGain);
+		this.monitorGain.connect(this.context.destination);
+
+		this.updateLevel();
+	}
+
 	async stop() {
+		const mode = this.mode;
 		this.running = false;
 		this.micOpen = false;
 		this.skipRequested = false;
@@ -217,7 +302,9 @@ export class StudioEngine {
 		this.currentSource?.stop();
 		this.currentSource = null;
 
-		if (this.encoder && this.socket?.readyState === WebSocket.OPEN) {
+		if (mode === 'talk') {
+			this.finishTalkBreak();
+		} else if (this.encoder && this.socket?.readyState === WebSocket.OPEN) {
 			for (const chunk of this.encoder.flush()) {
 				this.socket.send(chunk);
 			}
@@ -227,6 +314,8 @@ export class StudioEngine {
 		this.socket?.close();
 		this.socket = null;
 		this.encoder = null;
+		this.mode = null;
+		this.talkActive = false;
 
 		if (this.levelFrame) {
 			cancelAnimationFrame(this.levelFrame);
@@ -254,7 +343,9 @@ export class StudioEngine {
 		}
 		this.context = null;
 		this.callbacks?.onMicLevel(0);
-		this.callbacks?.onSourceState(false);
+		if (mode === 'mixer') {
+			this.callbacks?.onSourceState(false);
+		}
 	}
 
 	skip() {
@@ -293,7 +384,16 @@ export class StudioEngine {
 	setMicOpen(open: boolean) {
 		this.micOpen = open;
 		if (open && !this.micGraph) {
-			this.callbacks?.onError('Microphone is not connected; check browser mic permission and input device.');
+			this.callbacks?.onError('Microphone is not ready yet. Allow browser mic access, choose an input, or press Retry mic.');
+			return;
+		}
+		if (this.mode === 'talk') {
+			if (open) {
+				this.beginTalkBreak();
+			} else {
+				this.finishTalkBreak();
+			}
+			return;
 		}
 		this.applyDucking();
 	}
@@ -472,7 +572,7 @@ export class StudioEngine {
 				track.stop();
 			}
 			this.detachMicrophone();
-			const message = error instanceof Error ? error.message : 'Microphone is unavailable.';
+			const message = describeMicError(error);
 			this.callbacks?.onMicState({
 				...EMPTY_MIC_STATE,
 				message
@@ -565,8 +665,50 @@ export class StudioEngine {
 		}
 	}
 
+	private beginTalkBreak() {
+		if (!this.context || !this.options || this.mode !== 'talk' || this.talkActive) {
+			return;
+		}
+		if (!this.micGraph) {
+			this.callbacks?.onError('Microphone is not ready yet. Allow browser mic access, choose an input, or press Retry mic.');
+			return;
+		}
+		if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
+			this.callbacks?.onError('Talk break bridge is not connected.');
+			return;
+		}
+
+		this.encoder = new LiveMp3Encoder(this.context.sampleRate, this.options.bitrateKbps);
+		this.talkActive = true;
+		this.socket.send(JSON.stringify({ type: 'begin', bitrateKbps: this.options.bitrateKbps }));
+		this.applyDucking();
+	}
+
+	private finishTalkBreak() {
+		if (this.mode !== 'talk') {
+			return;
+		}
+
+		const encoder = this.encoder;
+		this.encoder = null;
+		this.talkActive = false;
+		this.applyDucking();
+		if (encoder && this.socket?.readyState === WebSocket.OPEN) {
+			for (const chunk of encoder.flush()) {
+				this.socket.send(chunk);
+			}
+			this.socket.send(JSON.stringify({ type: 'end' }));
+		}
+	}
+
 	private applyDucking() {
 		if (!this.context || !this.options) {
+			return;
+		}
+
+		if (this.mode === 'talk') {
+			const micTarget = this.talkActive && Boolean(this.micGraph) ? this.options.micVolume : 0;
+			this.micGain?.gain.setTargetAtTime(micTarget, this.context.currentTime, micTarget > 0 ? 0.015 : 0.08);
 			return;
 		}
 
@@ -644,6 +786,34 @@ async function openSourceSocket(bitrateKbps: number): Promise<WebSocket> {
 	return socket;
 }
 
+async function openTalkBreakSocket(): Promise<WebSocket> {
+	const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+	const socket = new WebSocket(`${protocol}//${window.location.host}/talk-break`);
+	socket.binaryType = 'arraybuffer';
+
+	await new Promise<void>((resolve, reject) => {
+		const timeout = window.setTimeout(() => reject(new Error('Talk break bridge timed out.')), 5000);
+		socket.addEventListener(
+			'open',
+			() => {
+				window.clearTimeout(timeout);
+				resolve();
+			},
+			{ once: true }
+		);
+		socket.addEventListener(
+			'error',
+			() => {
+				window.clearTimeout(timeout);
+				reject(new Error('Could not open talk break bridge.'));
+			},
+			{ once: true }
+		);
+	});
+
+	return socket;
+}
+
 declare global {
 	interface Window {
 		webkitAudioContext?: typeof AudioContext;
@@ -671,6 +841,25 @@ function buildMicConstraints(deviceId: string): MediaStreamConstraints {
 			channelCount: { ideal: 2 }
 		}
 	};
+}
+
+function describeMicError(error: unknown): string {
+	if (error instanceof DOMException) {
+		if (error.name === 'NotAllowedError' || error.name === 'SecurityError') {
+			return 'Browser microphone access is blocked for this page. Allow mic access in the address bar, then press Retry mic.';
+		}
+		if (error.name === 'NotFoundError' || error.name === 'DevicesNotFoundError') {
+			return 'No microphone input was found by the browser. Check the device connection, then press Retry mic.';
+		}
+		if (error.name === 'NotReadableError' || error.name === 'TrackStartError') {
+			return 'The selected microphone is busy or unavailable to the browser. Close other apps using it, then press Retry mic.';
+		}
+		if (error.name === 'OverconstrainedError' || error.name === 'ConstraintNotSatisfiedError') {
+			return 'The selected microphone could not satisfy the requested capture format. Choose the default input or another mic.';
+		}
+	}
+
+	return error instanceof Error ? error.message : 'Microphone is unavailable.';
 }
 
 function configureMicColor(graph: MicAudioGraph, mode: MicColorMode) {

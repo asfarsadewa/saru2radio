@@ -11,10 +11,15 @@ type PlayoutCallbacks = {
 
 const FALLBACK_BYTES_PER_SECOND = 16_000;
 const CHUNK_SIZE = 4096;
+const SOURCE_LEAD_MS = 500;
 
 export class DirectMp3Playout {
 	private running = false;
 	private skipRequested = false;
+	private paused = false;
+	private pauseStartedAt = 0;
+	private pauseDebtMs = 0;
+	private resumeWaiters: Array<() => void> = [];
 	private token = 0;
 
 	constructor(
@@ -30,6 +35,9 @@ export class DirectMp3Playout {
 		this.stop(false);
 		this.running = true;
 		this.skipRequested = false;
+		this.paused = false;
+		this.pauseStartedAt = 0;
+		this.pauseDebtMs = 0;
 		this.token += 1;
 		const token = this.token;
 		this.source.connect();
@@ -47,6 +55,7 @@ export class DirectMp3Playout {
 	stop(disconnect = true): void {
 		this.running = false;
 		this.skipRequested = true;
+		this.resumePausedLoop();
 		this.token += 1;
 		if (disconnect) {
 			this.source.disconnect();
@@ -59,6 +68,24 @@ export class DirectMp3Playout {
 
 	isRunning(): boolean {
 		return this.running;
+	}
+
+	pause(): void {
+		if (!this.running || this.paused) {
+			return;
+		}
+
+		this.paused = true;
+		this.pauseStartedAt = Date.now();
+	}
+
+	resume(): void {
+		if (!this.paused) {
+			return;
+		}
+
+		this.pauseDebtMs += Date.now() - this.pauseStartedAt;
+		this.resumePausedLoop();
 	}
 
 	private async run(token: number, queue: Track[]): Promise<void> {
@@ -85,6 +112,7 @@ export class DirectMp3Playout {
 			let dueAt = Date.now();
 
 			while (this.running && token === this.token && !this.skipRequested) {
+				dueAt += await this.consumePauseTime();
 				const { bytesRead } = await handle.read(buffer, 0, buffer.length, null);
 				if (bytesRead === 0) {
 					return;
@@ -92,10 +120,29 @@ export class DirectMp3Playout {
 
 				this.source.write(buffer.subarray(0, bytesRead));
 				dueAt += (bytesRead / bytesPerSecond) * 1000;
-				await delay(Math.max(0, dueAt - Date.now()));
+				await delay(calculatePlayoutDelayMs(dueAt, Date.now()));
 			}
 		} finally {
 			await handle.close();
+		}
+	}
+
+	private async consumePauseTime(): Promise<number> {
+		if (this.paused) {
+			await new Promise<void>((resolve) => this.resumeWaiters.push(resolve));
+		}
+
+		const pauseMs = this.pauseDebtMs;
+		this.pauseDebtMs = 0;
+		return pauseMs;
+	}
+
+	private resumePausedLoop(): void {
+		this.paused = false;
+		this.pauseStartedAt = 0;
+		const waiters = this.resumeWaiters.splice(0);
+		for (const resolve of waiters) {
+			resolve();
 		}
 	}
 }
@@ -106,4 +153,8 @@ export function estimatePacedBytesPerSecond(fileSize: number, durationSeconds: n
 	}
 
 	return FALLBACK_BYTES_PER_SECOND;
+}
+
+export function calculatePlayoutDelayMs(dueAt: number, now: number, sourceLeadMs = SOURCE_LEAD_MS): number {
+	return Math.max(0, dueAt - now - sourceLeadMs);
 }
