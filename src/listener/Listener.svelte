@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onDestroy, onMount } from 'svelte';
-	import { Pause, Play, Radio } from '@lucide/svelte';
+	import { Pause, Play, Radio, Send } from '@lucide/svelte';
 	import type { BroadcastStatus, NowPlaying } from '../lib/types';
 
 	let status: BroadcastStatus | null = null;
@@ -8,9 +8,15 @@
 	let audio: HTMLAudioElement;
 	let playing = false;
 	let errorMessage = '';
+	let requestName = '';
+	let requestMessage = '';
+	let requestStatus = '';
+	let requestSending = false;
 	let pollTimer: number | undefined;
 
 	$: onAir = Boolean(status?.onAir);
+	$: requestDisabled = !onAir || requestSending;
+	$: requestCharacters = requestMessage.length;
 
 	onMount(async () => {
 		await refresh();
@@ -54,6 +60,41 @@
 			errorMessage = 'The live stream is not ready yet.';
 		}
 	}
+
+	async function sendRequest() {
+		requestStatus = '';
+		if (!onAir || requestSending) {
+			return;
+		}
+
+		const name = requestName.trim();
+		const message = requestMessage.trim();
+		if (!name || !message) {
+			requestStatus = 'Name and message are required.';
+			return;
+		}
+
+		requestSending = true;
+		try {
+			const response = await fetch('/requests', {
+				method: 'POST',
+				headers: { 'content-type': 'application/json' },
+				body: JSON.stringify({ name, message })
+			});
+
+			if (!response.ok) {
+				throw new Error((await response.text()) || 'Could not send request.');
+			}
+
+			requestName = name;
+			requestMessage = '';
+			requestStatus = 'Request sent to the booth.';
+		} catch (error) {
+			requestStatus = error instanceof Error ? error.message : 'Could not send request.';
+		} finally {
+			requestSending = false;
+		}
+	}
 </script>
 
 <main class="listener-shell">
@@ -68,32 +109,54 @@
 		</span>
 	</header>
 
-	<section class="receiver">
-		<div class="dial-band" aria-hidden="true">
-			{#each Array.from({ length: 42 }) as _, index}
-				<span class:major={index % 7 === 0}></span>
-			{/each}
-		</div>
-		<div class="frequency-readout">
-			<span class="eyebrow">tuned</span>
-			<strong>8.010</strong>
-			<span>MHz</span>
-		</div>
-		<button class:playing class="play-control" type="button" disabled={!onAir} on:click={togglePlay}>
-			{#if playing}
-				<Pause />
-			{:else}
-				<Play />
-			{/if}
-		</button>
-		<div class="program">
-			<span class="eyebrow">program</span>
-			<h2>{nowPlaying?.title ?? 'Off air'}</h2>
-			<p>{nowPlaying?.artist ?? 'saru2radio'}</p>
-		</div>
-		<div class:active={playing} class="signal-lines" aria-hidden="true">
-			<span></span><span></span><span></span><span></span><span></span>
-		</div>
+	<section class="listener-console">
+		<section class="receiver" aria-label="Live receiver">
+			<div class="dial-band" aria-hidden="true">
+				{#each Array.from({ length: 42 }) as _, index}
+					<span class:major={index % 7 === 0}></span>
+				{/each}
+			</div>
+			<div class="receiver-main">
+				<button class:playing class="play-control" type="button" disabled={!onAir} aria-label={playing ? 'Pause stream' : 'Play stream'} on:click={togglePlay}>
+					{#if playing}
+						<Pause />
+					{:else}
+						<Play />
+					{/if}
+				</button>
+				<div class="program">
+					<span class="eyebrow">program</span>
+					<h2>{nowPlaying?.title ?? 'Off air'}</h2>
+					<p>{nowPlaying?.artist ?? 'saru2radio'}</p>
+				</div>
+				<div class:active={playing} class="signal-lines" aria-hidden="true">
+					<span></span><span></span><span></span><span></span><span></span>
+				</div>
+			</div>
+		</section>
+
+		<form class="request-line" on:submit|preventDefault={sendRequest}>
+			<div class="request-head">
+				<span class="eyebrow">request line</span>
+				<span>{requestCharacters}/500</span>
+			</div>
+			<div class="request-fields">
+				<input bind:value={requestName} disabled={requestDisabled} maxlength="40" placeholder="Your name" aria-label="Your name" />
+				<textarea
+					bind:value={requestMessage}
+					disabled={requestDisabled}
+					maxlength="500"
+					placeholder="Song request or message"
+					aria-label="Song request or message"
+					rows="2"
+				></textarea>
+				<button class="send-request" type="submit" disabled={requestDisabled}>
+					<Send />
+					{requestSending ? 'Sending' : 'Send'}
+				</button>
+			</div>
+			<p>{requestStatus || (onAir ? 'Requests go straight to the DJ booth.' : 'Requests open when the station is on air.')}</p>
+		</form>
 	</section>
 
 	<footer>
@@ -106,10 +169,13 @@
 
 <style>
 	.listener-shell {
-		min-height: 100dvh;
+		height: 100dvh;
+		min-height: 0;
 		display: grid;
-		grid-template-rows: auto 1fr auto;
-		padding: 18px;
+		grid-template-rows: auto minmax(0, 1fr) auto;
+		gap: 12px;
+		overflow: hidden;
+		padding: clamp(12px, 2vw, 18px);
 		background:
 			linear-gradient(90deg, rgba(20, 19, 17, 0.04) 1px, transparent 1px) 0 0 / 22px 22px,
 			var(--paper);
@@ -123,13 +189,13 @@
 		gap: 14px;
 	}
 
-	.receiver {
-		width: min(100%, 760px);
+	.listener-console {
+		width: min(100%, 820px);
+		min-height: 0;
 		place-self: center;
 		display: grid;
-		gap: 24px;
-		justify-items: center;
-		padding: clamp(22px, 6vw, 54px);
+		grid-template-rows: auto auto;
+		overflow: hidden;
 		border: 1px solid var(--line);
 		border-radius: 6px;
 		background:
@@ -138,44 +204,118 @@
 		backdrop-filter: blur(18px);
 	}
 
+	.receiver {
+		display: grid;
+		gap: 14px;
+		padding: clamp(16px, 4vw, 30px) clamp(16px, 5vw, 42px) 14px;
+	}
+
+	.receiver-main {
+		display: grid;
+		grid-template-columns: auto minmax(0, 1fr) auto;
+		align-items: center;
+		gap: clamp(14px, 3vw, 24px);
+	}
+
+	.request-line {
+		display: grid;
+		gap: 9px;
+		padding: 14px clamp(16px, 5vw, 42px) 16px;
+		border-top: 1px solid var(--line);
+		background: rgba(255, 255, 255, 0.18);
+	}
+
+	.request-head,
+	.request-fields {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+	}
+
+	.request-head {
+		justify-content: space-between;
+		color: var(--ink-faint);
+		font-size: 10px;
+	}
+
+	.request-fields {
+		display: grid;
+		grid-template-columns: minmax(118px, 0.36fr) minmax(0, 1fr) auto;
+		align-items: stretch;
+	}
+
+	.request-line input,
+	.request-line textarea {
+		width: 100%;
+		border: 1px solid var(--line);
+		border-radius: 4px;
+		background: rgba(255, 255, 255, 0.58);
+		color: var(--ink);
+		font: inherit;
+		padding: 10px 11px;
+	}
+
+	.request-line input {
+		min-width: 0;
+	}
+
+	.request-line textarea {
+		min-height: 54px;
+		resize: none;
+	}
+
+	.request-line p {
+		margin: 0;
+		color: var(--ink-dim);
+		font-size: 11px;
+	}
+
+	.send-request {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		gap: 8px;
+		min-width: 104px;
+		min-height: 54px;
+		border-radius: 4px;
+		background: var(--ink);
+		color: var(--paper);
+		font-size: 11px;
+		font-weight: 800;
+		letter-spacing: 0.1em;
+		text-transform: uppercase;
+	}
+
+	.send-request :global(svg) {
+		width: 16px;
+		height: 16px;
+	}
+
 	.dial-band {
 		display: grid;
 		grid-template-columns: repeat(42, 1fr);
 		align-items: end;
-		gap: 5px;
+		gap: 4px;
 		width: 100%;
-		height: 86px;
+		height: 48px;
 		border-bottom: 1px solid var(--line-strong);
 	}
 
 	.dial-band span {
 		display: block;
-		height: 26px;
+		height: 14px;
 		width: 1px;
 		background: var(--ink-faint);
 	}
 
 	.dial-band span.major {
-		height: 58px;
+		height: 34px;
 		background: var(--ink);
-	}
-
-	.frequency-readout {
-		display: flex;
-		align-items: baseline;
-		gap: 10px;
-	}
-
-	.frequency-readout strong {
-		font-size: clamp(4.5rem, 18vw, 10rem);
-		font-weight: 500;
-		font-variant-numeric: tabular-nums;
-		line-height: 0.85;
 	}
 
 	.play-control {
 		display: grid;
-		width: 92px;
+		width: clamp(62px, 9vw, 78px);
 		aspect-ratio: 1;
 		place-items: center;
 		border-radius: 50%;
@@ -189,22 +329,24 @@
 	}
 
 	.play-control :global(svg) {
-		width: 30px;
-		height: 30px;
+		width: 26px;
+		height: 26px;
 	}
 
 	.program {
-		text-align: center;
+		min-width: 0;
+		text-align: left;
 	}
 
 	.program h2 {
-		max-width: 14ch;
-		margin: 8px auto 4px;
+		max-width: 26ch;
+		margin: 5px 0 4px;
 		font-family: var(--serif);
-		font-size: clamp(2.2rem, 9vw, 5rem);
+		font-size: clamp(2rem, 6vw, 4.25rem);
 		font-style: italic;
 		font-weight: 400;
-		line-height: 0.92;
+		line-height: 0.96;
+		overflow-wrap: anywhere;
 	}
 
 	.program p,
@@ -217,7 +359,7 @@
 		display: flex;
 		align-items: center;
 		gap: 5px;
-		height: 34px;
+		height: 32px;
 	}
 
 	.signal-lines span {
@@ -251,12 +393,104 @@
 
 	footer {
 		justify-content: center;
-		min-height: 48px;
+		min-height: 34px;
 	}
 
 	footer :global(svg) {
 		width: 16px;
 		height: 16px;
+	}
+
+	@media (max-width: 680px) {
+		.listener-header {
+			align-items: flex-start;
+		}
+
+		.receiver {
+			gap: 12px;
+			padding: 14px 14px 12px;
+		}
+
+		.receiver-main {
+			grid-template-columns: auto minmax(0, 1fr);
+			gap: 12px;
+		}
+
+		.play-control {
+			width: 58px;
+		}
+
+		.program h2 {
+			font-size: clamp(1.75rem, 8vw, 3rem);
+		}
+
+		.signal-lines {
+			grid-column: 1 / -1;
+			justify-content: center;
+			height: 22px;
+		}
+
+		.signal-lines.active span {
+			animation-name: meter-small;
+		}
+
+		.request-line {
+			padding: 12px 14px 14px;
+		}
+
+		.request-fields {
+			display: grid;
+			grid-template-columns: minmax(0, 1fr) auto;
+		}
+
+		.request-line input {
+			grid-column: 1 / -1;
+		}
+
+		.send-request {
+			min-width: 86px;
+			min-height: 50px;
+		}
+	}
+
+	@media (max-height: 680px) {
+		.listener-shell {
+			gap: 8px;
+			padding-block: 10px;
+		}
+
+		.receiver {
+			gap: 10px;
+			padding-block: 12px;
+		}
+
+		.dial-band {
+			height: 34px;
+		}
+
+		.dial-band span {
+			height: 10px;
+		}
+
+		.dial-band span.major {
+			height: 24px;
+		}
+
+		.program h2 {
+			font-size: clamp(1.7rem, 5vw, 3.1rem);
+		}
+
+		.request-line textarea {
+			min-height: 46px;
+		}
+
+		.send-request {
+			min-height: 46px;
+		}
+
+		footer {
+			min-height: 26px;
+		}
 	}
 
 	@keyframes meter {
@@ -265,6 +499,15 @@
 		}
 		to {
 			height: 34px;
+		}
+	}
+
+	@keyframes meter-small {
+		from {
+			height: 6px;
+		}
+		to {
+			height: 22px;
 		}
 	}
 </style>

@@ -3,23 +3,30 @@
 	import {
 		FolderOpen,
 		ListMusic,
+		MessageSquare,
 		Mic,
 		RefreshCw,
 		Shuffle,
 		SkipForward,
 		StopCircle,
 		TowerControl,
+		Trash2,
 		UploadCloud,
-		Volume2
+		Volume2,
+		X
 	} from '@lucide/svelte';
 	import {
+		clearListenerMessages,
+		deleteListenerMessage,
 		getConfig,
 		getLibrary,
+		getListenerMessages,
 		getNowPlaying,
 		getStatus,
 		getStudioState,
 		getTunnel,
 		pickFolder,
+		playBroadcastNow,
 		scanLibrary,
 		skipBroadcast,
 		startBroadcast,
@@ -30,7 +37,7 @@
 		updateStudioState
 	} from '../lib/api';
 	import { StudioEngine, type MicCaptureState, type MicColorMode } from '../lib/audio/studioEngine';
-	import type { BroadcastStatus, LibraryState, NowPlaying, ServerConfig, Track, TunnelState } from '../lib/types';
+	import type { BroadcastStatus, LibraryState, ListenerMessage, NowPlaying, ServerConfig, Track, TunnelState } from '../lib/types';
 
 	type BroadcastMode = 'direct' | 'mixer';
 
@@ -49,6 +56,7 @@
 	let libraryRecursive = false;
 	let queue: Track[] = [];
 	let nowPlaying: NowPlaying | null = null;
+	let listenerMessages: ListenerMessage[] = [];
 	let ordered = false;
 	let errorMessage = '';
 	let busyMessage = '';
@@ -103,12 +111,13 @@
 
 	async function refreshAll() {
 		try {
-			const [nextConfig, nextLibrary, nextStatus, nextTunnel, nextNowPlaying, studioState] = await Promise.all([
+			const [nextConfig, nextLibrary, nextStatus, nextTunnel, nextNowPlaying, nextListenerMessages, studioState] = await Promise.all([
 				getConfig(),
 				getLibrary(),
 				getStatus(),
 				getTunnel(),
 				getNowPlaying(),
+				getListenerMessages(),
 				getStudioState()
 			]);
 			config = nextConfig;
@@ -116,6 +125,7 @@
 			status = nextStatus;
 			tunnel = nextTunnel;
 			nowPlaying = nextNowPlaying;
+			listenerMessages = nextListenerMessages;
 			ordered = studioState.ordered;
 			libraryRecursive = studioState.broadcastRecursive;
 			directoryInput = library.directory || studioState.broadcastDirectory;
@@ -127,7 +137,12 @@
 
 	async function refreshStatusOnly() {
 		try {
-			[status, tunnel, nowPlaying] = await Promise.all([getStatus(), getTunnel(), getNowPlaying()]);
+			[status, tunnel, nowPlaying, listenerMessages] = await Promise.all([
+				getStatus(),
+				getTunnel(),
+				getNowPlaying(),
+				getListenerMessages()
+			]);
 		} catch {
 			// Polling should not interrupt the booth.
 		}
@@ -405,7 +420,7 @@
 		if (onAir) {
 			if (activeBroadcastMode === 'direct') {
 				queue = [track, ...readyTracks.filter((candidate) => candidate.id !== track.id)];
-				status = await startBroadcast(queue.map((candidate) => candidate.id));
+				status = await playBroadcastNow(queue.map((candidate) => candidate.id));
 				nowPlaying = await getNowPlaying();
 				return;
 			}
@@ -451,6 +466,22 @@
 		}
 	}
 
+	async function dismissListenerRequest(id: string) {
+		try {
+			listenerMessages = await deleteListenerMessage(id);
+		} catch (error) {
+			setError(error);
+		}
+	}
+
+	async function clearListenerRequests() {
+		try {
+			listenerMessages = await clearListenerMessages();
+		} catch (error) {
+			setError(error);
+		}
+	}
+
 	function setError(error: unknown) {
 		errorMessage = error instanceof Error ? error.message : 'Unexpected error.';
 	}
@@ -471,6 +502,14 @@
 		const minutes = Math.floor(seconds / 60);
 		const rest = Math.floor(seconds % 60).toString().padStart(2, '0');
 		return `${minutes}:${rest}`;
+	}
+
+	function formatRequestTime(value: string): string {
+		const date = new Date(value);
+		if (Number.isNaN(date.getTime())) {
+			return '';
+		}
+		return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 	}
 </script>
 
@@ -610,6 +649,43 @@
 					{tunnel.running ? 'Stop tunnel' : 'Start tunnel'}
 				</button>
 				<button class="ghost-button" type="button" disabled={!listenerUrl} on:click={copyListenerUrl}>Copy URL</button>
+			</div>
+
+			<div class="requests-panel panel">
+				<div class="panel-head">
+					<div>
+						<span class="eyebrow">listener requests</span>
+						<h2>Request line</h2>
+					</div>
+					<button
+						class="icon-button"
+						type="button"
+						disabled={listenerMessages.length === 0}
+						aria-label="Clear listener requests"
+						on:click={clearListenerRequests}
+					>
+						<Trash2 />
+					</button>
+				</div>
+
+				<div class="request-inbox">
+					{#each listenerMessages as request (request.id)}
+						<article class="request-card">
+							<div>
+								<MessageSquare />
+								<strong>{request.name}</strong>
+								<time datetime={request.receivedAt}>{formatRequestTime(request.receivedAt)}</time>
+							</div>
+							<button class="icon-button" type="button" aria-label={`Dismiss request from ${request.name}`} on:click={() => dismissListenerRequest(request.id)}>
+								<X />
+							</button>
+							<p>{request.message}</p>
+						</article>
+					{/each}
+					{#if listenerMessages.length === 0}
+						<p class="empty-note">No listener requests yet.</p>
+					{/if}
+				</div>
 			</div>
 		</section>
 
@@ -782,7 +858,7 @@
 
 	.broadcast-panel {
 		display: grid;
-		grid-template-rows: 1fr auto auto;
+		grid-template-rows: minmax(300px, 1.1fr) auto auto minmax(112px, 0.42fr);
 		gap: 12px;
 		overflow: hidden;
 	}
@@ -913,9 +989,10 @@
 	.dial {
 		position: relative;
 		display: grid;
-		grid-template-rows: auto 1fr auto;
+		grid-template-rows: auto minmax(70px, 0.5fr) minmax(78px, auto);
+		gap: 8px;
 		min-height: 0;
-		padding: 20px;
+		padding: 16px 20px;
 		overflow: hidden;
 		background:
 			linear-gradient(180deg, rgba(20, 19, 17, 0.04), transparent),
@@ -929,17 +1006,18 @@
 	}
 
 	.frequency strong {
-		font-size: clamp(2.2rem, 6vw, 5.5rem);
+		font-size: clamp(1.8rem, 3.4vw, 2.75rem);
 		font-weight: 500;
 		font-variant-numeric: tabular-nums;
 		letter-spacing: 0;
+		line-height: 0.92;
 	}
 
 	.vu {
 		position: relative;
 		align-self: center;
-		width: min(100%, 540px);
-		aspect-ratio: 2.6 / 1;
+		width: min(68%, 360px);
+		aspect-ratio: 4 / 1;
 		margin: 0 auto;
 		border-bottom: 1px solid var(--line-strong);
 		background:
@@ -952,7 +1030,7 @@
 		left: 50%;
 		bottom: 0;
 		width: 2px;
-		height: 95%;
+		height: 90%;
 		background: var(--signal);
 		transform: rotate(calc(-44deg + var(--level) * 88deg));
 		transform-origin: 50% 100%;
@@ -970,14 +1048,27 @@
 		font-size: 10px;
 	}
 
+	.now {
+		min-width: 0;
+		min-height: 0;
+		overflow: hidden;
+	}
+
 	.now h2 {
-		margin: 6px 0;
+		display: -webkit-box;
+		max-width: 100%;
+		margin: 5px 0 4px;
+		overflow: hidden;
+		-webkit-box-orient: vertical;
+		-webkit-line-clamp: 2;
+		line-clamp: 2;
 		font-family: var(--serif);
-		font-size: clamp(2rem, 5vw, 4.5rem);
+		font-size: clamp(1.45rem, 2.8vw, 2.25rem);
 		font-style: italic;
 		font-weight: 400;
-		line-height: 0.95;
+		line-height: 1.02;
 		letter-spacing: 0;
+		overflow-wrap: anywhere;
 	}
 
 	.transport,
@@ -1027,6 +1118,79 @@
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
+	}
+
+	.requests-panel {
+		display: grid;
+		min-height: 0;
+		grid-template-rows: auto minmax(0, 1fr);
+		gap: 10px;
+		overflow: hidden;
+		padding: 12px;
+	}
+
+	.requests-panel .panel-head h2 {
+		font-size: 22px;
+	}
+
+	.request-inbox {
+		display: grid;
+		align-content: start;
+		gap: 8px;
+		min-height: 0;
+		overflow: auto;
+		padding-right: 2px;
+	}
+
+	.request-card {
+		display: grid;
+		grid-template-columns: minmax(0, 1fr) auto;
+		gap: 7px 10px;
+		padding: 9px;
+		border: 1px solid var(--line);
+		border-radius: 4px;
+		background: rgba(255, 255, 255, 0.32);
+	}
+
+	.request-card > div {
+		display: flex;
+		min-width: 0;
+		align-items: center;
+		gap: 7px;
+	}
+
+	.request-card strong {
+		min-width: 0;
+		overflow: hidden;
+		font-size: 12px;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.request-card time {
+		flex: 0 0 auto;
+		color: var(--ink-faint);
+		font-size: 10px;
+	}
+
+	.request-card p {
+		grid-column: 1 / -1;
+		margin: 0;
+		color: var(--ink);
+		font-size: 12px;
+		line-height: 1.35;
+		overflow-wrap: anywhere;
+	}
+
+	.request-card :global(svg) {
+		width: 14px;
+		height: 14px;
+		flex: 0 0 auto;
+	}
+
+	.request-card .icon-button {
+		width: 30px;
+		min-height: 30px;
 	}
 
 	.mic-pad {

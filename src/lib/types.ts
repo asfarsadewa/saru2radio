@@ -17,6 +17,13 @@ export type NowPlaying = {
 	duration: number | null;
 };
 
+export type ListenerMessage = {
+	id: string;
+	name: string;
+	message: string;
+	receivedAt: string;
+};
+
 export type Track = {
 	id: string;
 	sourcePath: string;

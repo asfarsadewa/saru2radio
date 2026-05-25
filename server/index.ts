@@ -15,6 +15,7 @@ import {
 } from './icecast.js';
 import { LibraryManager, resolveRadioToolPath } from './library.js';
 import { DIST_DIR } from './paths.js';
+import { ListenerMessageStore, ListenerMessageValidationError } from './listener-messages.js';
 import { DirectMp3Playout } from './playout.js';
 import { SourceStreamPacer } from './source-pacer.js';
 import { StudioStateStore } from './studio-state.js';
@@ -38,6 +39,7 @@ let nowPlaying: NowPlaying = {
 const radioToolPath = await resolveExistingPath(resolveRadioToolPath());
 const library = new LibraryManager(radioToolPath);
 const studioState = new StudioStateStore();
+const listenerMessages = new ListenerMessageStore();
 const tunnel = new TunnelManager();
 let source: IcecastSourceConnection;
 let playout: DirectMp3Playout;
@@ -114,6 +116,13 @@ function createStudioApp() {
 	});
 
 	app.get('/api/status', (_request, response) => response.json(currentStatus()));
+	app.get('/api/listener-messages', (_request, response) => response.json(listenerMessages.list()));
+	app.delete('/api/listener-messages/:id', (request, response) => {
+		response.json(listenerMessages.delete(request.params.id));
+	});
+	app.delete('/api/listener-messages', (_request, response) => {
+		response.json(listenerMessages.clear());
+	});
 	app.get('/api/studio-state', (_request, response) => response.json(studioState.get()));
 	app.patch('/api/studio-state', async (request, response, next) => {
 		try {
@@ -187,16 +196,26 @@ function createStudioApp() {
 
 	app.post('/api/broadcast/start', (request, response, next) => {
 		try {
-			const requestedIds: string[] = Array.isArray(request.body?.trackIds) ? request.body.trackIds.map(String) : [];
-			const queue: Track[] =
-				requestedIds.length > 0
-					? requestedIds.map((id: string) => library.getTrack(id)).filter((track): track is Track => Boolean(track?.cacheReady))
-					: library.getState().tracks.filter((track) => track.cacheReady);
+			const queue = resolveBroadcastQueue(request.body?.trackIds);
 			playout.start(queue);
 			status = {
 				...status,
 				onAir: true,
 				startedAt: new Date().toISOString()
+			};
+			response.json(currentStatus());
+		} catch (error) {
+			next(error);
+		}
+	});
+	app.post('/api/broadcast/play-now', (request, response, next) => {
+		try {
+			const queue = resolveBroadcastQueue(request.body?.trackIds);
+			playout.playNow(queue);
+			status = {
+				...status,
+				onAir: true,
+				startedAt: status.startedAt ?? new Date().toISOString()
 			};
 			response.json(currentStatus());
 		} catch (error) {
@@ -244,11 +263,28 @@ function createStudioApp() {
 function createPublicApp() {
 	const app = express();
 	app.disable('x-powered-by');
+	app.use(express.json({ limit: '8kb' }));
 	app.use('/assets', express.static(path.join(DIST_DIR, 'assets'), { immutable: true, maxAge: '1h' }));
 
 	app.get('/', (_request, response) => response.sendFile(path.join(DIST_DIR, 'listener.html')));
 	app.get('/status.json', (request, response) => response.json(publicStatus(request)));
 	app.get('/now-playing.json', (_request, response) => response.json(nowPlaying));
+	app.post('/requests', (request, response) => {
+		if (!status.onAir) {
+			response.status(409).type('text/plain').send('The station is off air.');
+			return;
+		}
+
+		try {
+			response.status(201).json(listenerMessages.create(request.body ?? {}));
+		} catch (error) {
+			if (error instanceof ListenerMessageValidationError) {
+				response.status(400).type('text/plain').send(error.message);
+				return;
+			}
+			throw error;
+		}
+	});
 	app.get('/live.mp3', (request, response) => {
 		if (!status.onAir) {
 			response.status(503).type('text/plain').send('saru2radio is off air.');
@@ -414,6 +450,15 @@ function currentStatus(): BroadcastStatus {
 		tunnelUrl: tunnel.getState().url,
 		sourceConnected: source?.isConnected() ?? status.sourceConnected
 	};
+}
+
+function resolveBroadcastQueue(trackIds: unknown): Track[] {
+	const requestedIds = Array.isArray(trackIds) ? trackIds.map(String) : [];
+	if (requestedIds.length === 0) {
+		return library.getState().tracks.filter((track) => track.cacheReady);
+	}
+
+	return requestedIds.map((id) => library.getTrack(id)).filter((track): track is Track => Boolean(track?.cacheReady));
 }
 
 function publicStatus(request: express.Request): BroadcastStatus {

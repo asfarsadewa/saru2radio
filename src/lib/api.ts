@@ -1,4 +1,4 @@
-import type { BroadcastStatus, LibraryState, NowPlaying, ServerConfig, StudioState, TunnelState } from './types';
+import type { BroadcastStatus, LibraryState, ListenerMessage, NowPlaying, ServerConfig, StudioState, TunnelState } from './types';
 
 async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
 	const response = await fetch(path, {
@@ -61,6 +61,13 @@ export function startBroadcast(trackIds?: string[]): Promise<BroadcastStatus> {
 	});
 }
 
+export function playBroadcastNow(trackIds: string[]): Promise<BroadcastStatus> {
+	return requestJson<BroadcastStatus>('/api/broadcast/play-now', {
+		method: 'POST',
+		body: JSON.stringify({ trackIds })
+	});
+}
+
 export function skipBroadcast(): Promise<BroadcastStatus> {
 	return requestJson<BroadcastStatus>('/api/broadcast/skip', { method: 'POST' });
 }
@@ -87,6 +94,18 @@ export function getStatus(): Promise<BroadcastStatus> {
 
 export function getNowPlaying(): Promise<NowPlaying> {
 	return requestJson<NowPlaying>('/api/now-playing');
+}
+
+export function getListenerMessages(): Promise<ListenerMessage[]> {
+	return requestJson<ListenerMessage[]>('/api/listener-messages');
+}
+
+export function deleteListenerMessage(id: string): Promise<ListenerMessage[]> {
+	return requestJson<ListenerMessage[]>(`/api/listener-messages/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+export function clearListenerMessages(): Promise<ListenerMessage[]> {
+	return requestJson<ListenerMessage[]>('/api/listener-messages', { method: 'DELETE' });
 }
 
 export function startTunnel(): Promise<TunnelState> {

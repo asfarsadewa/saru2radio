@@ -20,6 +20,9 @@ export class DirectMp3Playout {
 	private pauseStartedAt = 0;
 	private pauseDebtMs = 0;
 	private resumeWaiters: Array<() => void> = [];
+	private queue: Track[] = [];
+	private currentIndex = 0;
+	private switchRequested = false;
 	private token = 0;
 
 	constructor(
@@ -33,15 +36,18 @@ export class DirectMp3Playout {
 		}
 
 		this.stop(false);
+		this.queue = queue;
+		this.currentIndex = 0;
 		this.running = true;
 		this.skipRequested = false;
+		this.switchRequested = false;
 		this.paused = false;
 		this.pauseStartedAt = 0;
 		this.pauseDebtMs = 0;
 		this.token += 1;
 		const token = this.token;
 		this.source.connect();
-		void this.run(token, queue).catch((error) => {
+		void this.run(token).catch((error) => {
 			if (token !== this.token) {
 				return;
 			}
@@ -52,9 +58,26 @@ export class DirectMp3Playout {
 		});
 	}
 
+	playNow(queue: Track[]): void {
+		if (queue.length === 0) {
+			throw new Error('Prepare at least one radio copy before going on air.');
+		}
+
+		if (!this.running) {
+			this.start(queue);
+			return;
+		}
+
+		this.queue = queue;
+		this.currentIndex = 0;
+		this.switchRequested = true;
+		this.skipRequested = true;
+	}
+
 	stop(disconnect = true): void {
 		this.running = false;
 		this.skipRequested = true;
+		this.switchRequested = false;
 		this.resumePausedLoop();
 		this.token += 1;
 		if (disconnect) {
@@ -64,6 +87,7 @@ export class DirectMp3Playout {
 
 	skip(): void {
 		this.skipRequested = true;
+		this.switchRequested = false;
 	}
 
 	isRunning(): boolean {
@@ -88,10 +112,9 @@ export class DirectMp3Playout {
 		this.resumePausedLoop();
 	}
 
-	private async run(token: number, queue: Track[]): Promise<void> {
-		let index = 0;
+	private async run(token: number): Promise<void> {
 		while (this.running && token === this.token) {
-			const track = queue[index % queue.length];
+			const track = this.queue[this.currentIndex % this.queue.length];
 			if (!track) {
 				break;
 			}
@@ -99,7 +122,11 @@ export class DirectMp3Playout {
 			this.callbacks.onTrack(track);
 			await this.streamTrack(track, token);
 			this.skipRequested = false;
-			index += 1;
+			if (this.switchRequested) {
+				this.switchRequested = false;
+			} else {
+				this.currentIndex += 1;
+			}
 		}
 	}
 
@@ -112,7 +139,11 @@ export class DirectMp3Playout {
 			let dueAt = Date.now();
 
 			while (this.running && token === this.token && !this.skipRequested) {
-				dueAt += await this.consumePauseTime();
+				const pauseMs = await this.consumePauseTime();
+				if (!this.running || token !== this.token || this.skipRequested) {
+					return;
+				}
+				dueAt += pauseMs;
 				const { bytesRead } = await handle.read(buffer, 0, buffer.length, null);
 				if (bytesRead === 0) {
 					return;
