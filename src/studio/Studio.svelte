@@ -81,6 +81,11 @@
 	let pollTimer: number | undefined;
 	let directMonitorAudio: HTMLAudioElement | null = null;
 	let directMonitorBaseUrl = '';
+	let directMonitorContext: AudioContext | null = null;
+	let directMonitorSource: MediaElementAudioSourceNode | null = null;
+	let directMonitorAnalyser: AnalyserNode | null = null;
+	let directMonitorData: Uint8Array<ArrayBuffer> | null = null;
+	let directMonitorLevelFrame = 0;
 	const engine = new StudioEngine();
 
 	$: readyTracks = library.tracks.filter((track) => track.cacheReady);
@@ -109,6 +114,7 @@
 			window.clearInterval(pollTimer);
 		}
 		stopDirectMonitor();
+		void closeDirectMonitorMeter();
 		void engine.stop();
 	});
 
@@ -236,7 +242,7 @@
 				busyMessage = 'Starting direct stream';
 				status = await startBroadcast(queue.map((track) => track.id));
 				activeBroadcastMode = 'direct';
-				outputLevel = 0.72;
+				outputLevel = 0.05;
 				await syncDirectMonitor({ restart: true });
 			} else {
 				busyMessage = 'Starting DJ mixer';
@@ -322,10 +328,7 @@
 			return;
 		}
 
-		const streamUrl = config?.icecastUrl ?? status?.icecastUrl ?? status?.streamUrl ?? '';
-		if (!streamUrl) {
-			return;
-		}
+		const streamUrl = '/api/monitor/live.mp3';
 		if (options.restart || streamUrl !== directMonitorBaseUrl || !directMonitorAudio.src) {
 			directMonitorBaseUrl = streamUrl;
 			const separator = streamUrl.includes('?') ? '&' : '?';
@@ -334,7 +337,11 @@
 		}
 
 		try {
+			const meterReady = await ensureDirectMonitorMeter();
 			await directMonitorAudio.play();
+			if (meterReady) {
+				startDirectMonitorMeter();
+			}
 		} catch {
 			if (monitor && directOnAir && onAir) {
 				errorMessage = 'Local monitor could not start. Toggle Local monitor again.';
@@ -343,13 +350,88 @@
 	}
 
 	function stopDirectMonitor() {
+		stopDirectMonitorMeter();
 		directMonitorBaseUrl = '';
+		if (activeBroadcastMode !== 'mixer') {
+			outputLevel = 0.05;
+		}
 		if (!directMonitorAudio) {
 			return;
 		}
 		directMonitorAudio.pause();
 		directMonitorAudio.removeAttribute('src');
 		directMonitorAudio.load();
+	}
+
+	async function ensureDirectMonitorMeter() {
+		if (!directMonitorAudio) {
+			return false;
+		}
+
+		const AudioContextConstructor = window.AudioContext ?? window.webkitAudioContext;
+		if (!AudioContextConstructor) {
+			return false;
+		}
+
+		if (!directMonitorContext) {
+			directMonitorContext = new AudioContextConstructor({ latencyHint: 'playback' });
+		}
+		if (!directMonitorSource) {
+			directMonitorSource = directMonitorContext.createMediaElementSource(directMonitorAudio);
+			directMonitorAnalyser = directMonitorContext.createAnalyser();
+			directMonitorAnalyser.fftSize = 512;
+			directMonitorAnalyser.smoothingTimeConstant = 0.5;
+			directMonitorData = new Uint8Array(directMonitorAnalyser.fftSize);
+			directMonitorSource.connect(directMonitorAnalyser);
+			directMonitorAnalyser.connect(directMonitorContext.destination);
+		}
+		if (directMonitorContext.state !== 'running') {
+			await directMonitorContext.resume();
+		}
+
+		return Boolean(directMonitorAnalyser && directMonitorData);
+	}
+
+	function startDirectMonitorMeter() {
+		stopDirectMonitorMeter();
+		updateDirectMonitorMeter();
+	}
+
+	function updateDirectMonitorMeter() {
+		if (!directMonitorAnalyser || !directMonitorData || !monitor || !directOnAir || !onAir) {
+			stopDirectMonitorMeter();
+			return;
+		}
+
+		directMonitorAnalyser.getByteTimeDomainData(directMonitorData);
+		let sum = 0;
+		for (const value of directMonitorData) {
+			const normalized = (value - 128) / 128;
+			sum += normalized * normalized;
+		}
+		const rms = Math.sqrt(sum / directMonitorData.length);
+		outputLevel = Math.min(1, Math.max(0.04, Math.pow(rms * 8, 0.7)));
+		directMonitorLevelFrame = window.requestAnimationFrame(updateDirectMonitorMeter);
+	}
+
+	function stopDirectMonitorMeter() {
+		if (directMonitorLevelFrame) {
+			window.cancelAnimationFrame(directMonitorLevelFrame);
+			directMonitorLevelFrame = 0;
+		}
+	}
+
+	async function closeDirectMonitorMeter() {
+		stopDirectMonitorMeter();
+		directMonitorSource?.disconnect();
+		directMonitorAnalyser?.disconnect();
+		directMonitorSource = null;
+		directMonitorAnalyser = null;
+		directMonitorData = null;
+		if (directMonitorContext && directMonitorContext.state !== 'closed') {
+			await directMonitorContext.close();
+		}
+		directMonitorContext = null;
 	}
 
 	async function retryMic() {

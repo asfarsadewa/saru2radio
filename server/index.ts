@@ -17,6 +17,14 @@ import { LibraryManager, resolveRadioToolPath } from './library.js';
 import { DIST_DIR } from './paths.js';
 import { ListenerMessageStore, ListenerMessageValidationError } from './listener-messages.js';
 import { DirectMp3Playout } from './playout.js';
+import {
+	createRateLimitMiddleware,
+	createStudioOriginGuard,
+	FixedWindowRateLimiter,
+	isAllowedStudioOrigin,
+	listenerRequestKey,
+	rejectForbiddenUpgrade
+} from './security.js';
 import { SourceStreamPacer } from './source-pacer.js';
 import { StudioStateStore } from './studio-state.js';
 import { hasCloudflared, TunnelManager } from './tunnel.js';
@@ -25,6 +33,8 @@ const STATION_NAME = 'saru2radio';
 const STUDIO_PORT = Number(process.env.STUDIO_PORT ?? 8011);
 const PUBLIC_PORT = Number(process.env.PUBLIC_PORT ?? 8012);
 const BITRATE_KBPS = Number(process.env.RADIO_BITRATE_KBPS ?? 128);
+const LISTENER_REQUEST_LIMIT = Number(process.env.LISTENER_REQUEST_LIMIT ?? 6);
+const LISTENER_REQUEST_WINDOW_MS = Number(process.env.LISTENER_REQUEST_WINDOW_MS ?? 60_000);
 
 let runtime: IcecastRuntimeConfig;
 let status: BroadcastStatus;
@@ -98,6 +108,7 @@ async function main() {
 function createStudioApp() {
 	const app = express();
 	app.disable('x-powered-by');
+	app.use('/api', createStudioOriginGuard(STUDIO_PORT));
 	app.use(express.json({ limit: '1mb' }));
 	app.use(express.static(DIST_DIR));
 
@@ -193,6 +204,7 @@ function createStudioApp() {
 			next(error);
 		}
 	});
+	app.get('/api/monitor/live.mp3', proxyLiveStream);
 
 	app.post('/api/broadcast/start', (request, response, next) => {
 		try {
@@ -262,72 +274,82 @@ function createStudioApp() {
 
 function createPublicApp() {
 	const app = express();
+	const listenerRequestLimiter = new FixedWindowRateLimiter({
+		limit: LISTENER_REQUEST_LIMIT,
+		windowMs: LISTENER_REQUEST_WINDOW_MS
+	});
 	app.disable('x-powered-by');
-	app.use(express.json({ limit: '8kb' }));
 	app.use('/assets', express.static(path.join(DIST_DIR, 'assets'), { immutable: true, maxAge: '1h' }));
 
 	app.get('/', (_request, response) => response.sendFile(path.join(DIST_DIR, 'listener.html')));
 	app.get('/status.json', (request, response) => response.json(publicStatus(request)));
 	app.get('/now-playing.json', (_request, response) => response.json(nowPlaying));
-	app.post('/requests', (request, response) => {
-		if (!status.onAir) {
-			response.status(409).type('text/plain').send('The station is off air.');
-			return;
-		}
-
-		try {
-			response.status(201).json(listenerMessages.create(request.body ?? {}));
-		} catch (error) {
-			if (error instanceof ListenerMessageValidationError) {
-				response.status(400).type('text/plain').send(error.message);
+	app.post(
+		'/requests',
+		createRateLimitMiddleware(listenerRequestLimiter, listenerRequestKey),
+		express.json({ limit: '8kb' }),
+		(request, response) => {
+			if (!status.onAir) {
+				response.status(409).type('text/plain').send('The station is off air.');
 				return;
 			}
-			throw error;
-		}
-	});
-	app.get('/live.mp3', (request, response) => {
-		if (!status.onAir) {
-			response.status(503).type('text/plain').send('saru2radio is off air.');
-			return;
-		}
 
-		request.socket.setNoDelay(true);
-		response.socket?.setNoDelay(true);
-		const upstream = http.get(
-			{
-				host: runtime.host,
-				port: runtime.port,
-				path: runtime.mount,
-				timeout: 5000
-			},
-			(upstreamResponse) => {
-				if ((upstreamResponse.statusCode ?? 500) >= 400) {
-					response.status(503).type('text/plain').send('Stream source is not connected.');
-					upstreamResponse.resume();
+			try {
+				response.status(201).json(listenerMessages.create(request.body ?? {}));
+			} catch (error) {
+				if (error instanceof ListenerMessageValidationError) {
+					response.status(400).type('text/plain').send(error.message);
 					return;
 				}
-				response.writeHead(200, {
-					'content-type': 'audio/mpeg',
-					'cache-control': 'no-store, no-transform',
-					'connection': 'keep-alive',
-					'x-accel-buffering': 'no'
-				});
-				response.flushHeaders();
-				upstreamResponse.pipe(response);
+				throw error;
 			}
-		);
-		upstream.on('socket', (socket) => {
-			socket.setNoDelay(true);
-		});
-		upstream.on('error', () => {
-			if (!response.headersSent) {
-				response.status(502).type('text/plain').send('Could not reach Icecast.');
-			}
-		});
-		request.on('close', () => upstream.destroy());
-	});
+		}
+	);
+	app.get('/live.mp3', proxyLiveStream);
 	app.use((_request, response) => response.status(404).type('text/plain').send('Not found'));
 	return app;
+}
+
+function proxyLiveStream(request: express.Request, response: express.Response) {
+	if (!status.onAir) {
+		response.status(503).type('text/plain').send('saru2radio is off air.');
+		return;
+	}
+
+	request.socket.setNoDelay(true);
+	response.socket?.setNoDelay(true);
+	const upstream = http.get(
+		{
+			host: runtime.host,
+			port: runtime.port,
+			path: runtime.mount,
+			timeout: 5000
+		},
+		(upstreamResponse) => {
+			if ((upstreamResponse.statusCode ?? 500) >= 400) {
+				response.status(503).type('text/plain').send('Stream source is not connected.');
+				upstreamResponse.resume();
+				return;
+			}
+			response.writeHead(200, {
+				'content-type': 'audio/mpeg',
+				'cache-control': 'no-store, no-transform',
+				'connection': 'keep-alive',
+				'x-accel-buffering': 'no'
+			});
+			response.flushHeaders();
+			upstreamResponse.pipe(response);
+		}
+	);
+	upstream.on('socket', (socket) => {
+		socket.setNoDelay(true);
+	});
+	upstream.on('error', () => {
+		if (!response.headersSent) {
+			response.status(502).type('text/plain').send('Could not reach Icecast.');
+		}
+	});
+	request.on('close', () => upstream.destroy());
 }
 
 function attachStudioSockets(server: ReturnType<typeof createServer>) {
@@ -342,6 +364,10 @@ function attachStudioSockets(server: ReturnType<typeof createServer>) {
 		const socketServer = pathname === '/source' ? sourceSocketServer : pathname === '/talk-break' ? talkBreakSocketServer : null;
 		if (!socketServer) {
 			socket.destroy();
+			return;
+		}
+		if (!isAllowedStudioOrigin(request.headers.origin, STUDIO_PORT)) {
+			rejectForbiddenUpgrade(socket);
 			return;
 		}
 

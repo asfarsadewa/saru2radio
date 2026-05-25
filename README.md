@@ -275,6 +275,8 @@ It also:
 | --- | --- | --- |
 | `STUDIO_PORT` | `8011` | Local DJ studio and private API port. |
 | `PUBLIC_PORT` | `8012` | Local public listener facade port. |
+| `LISTENER_REQUEST_LIMIT` | `6` | Public listener requests allowed per client window. |
+| `LISTENER_REQUEST_WINDOW_MS` | `60000` | Listener request rate-limit window in milliseconds. |
 | `RADIO_BITRATE_KBPS` | `128` | Browser encoder/source pacer bitrate target. |
 | `RADIO_SOUND_EXE` | `..\make-radio-sound\dist\make-radio-sound.exe` | Retro audio preparation tool path. |
 | `SARU2RADIO_TUNNEL_CONFIG` | `.saru2radio/cloudflare-named-tunnel.json` | Optional named Cloudflare tunnel config. |
