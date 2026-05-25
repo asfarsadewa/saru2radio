@@ -79,6 +79,8 @@
 	let micOpen = false;
 	let micReady = false;
 	let pollTimer: number | undefined;
+	let directMonitorAudio: HTMLAudioElement | null = null;
+	let directMonitorBaseUrl = '';
 	const engine = new StudioEngine();
 
 	$: readyTracks = library.tracks.filter((track) => track.cacheReady);
@@ -106,6 +108,7 @@
 		if (pollTimer) {
 			window.clearInterval(pollTimer);
 		}
+		stopDirectMonitor();
 		void engine.stop();
 	});
 
@@ -234,6 +237,7 @@
 				status = await startBroadcast(queue.map((track) => track.id));
 				activeBroadcastMode = 'direct';
 				outputLevel = 0.72;
+				await syncDirectMonitor({ restart: true });
 			} else {
 				busyMessage = 'Starting DJ mixer';
 				await engine.start(queue, getEngineOptions(), getEngineCallbacks());
@@ -244,6 +248,7 @@
 			}
 			nowPlaying = await getNowPlaying();
 		} catch (error) {
+			stopDirectMonitor();
 			await engine.stop();
 			await stopBroadcast();
 			activeBroadcastMode = null;
@@ -254,6 +259,7 @@
 	}
 
 	async function goOffAir() {
+		stopDirectMonitor();
 		await engine.stop();
 		micLatched = false;
 		micHeld = false;
@@ -303,6 +309,47 @@
 
 	function applyAudioOptions() {
 		engine.setOptions(getEngineOptions());
+		void syncDirectMonitor();
+	}
+
+	async function syncDirectMonitor(options: { restart?: boolean } = {}) {
+		const shouldPlay = monitor && directOnAir && onAir;
+		if (!shouldPlay) {
+			stopDirectMonitor();
+			return;
+		}
+		if (!directMonitorAudio) {
+			return;
+		}
+
+		const streamUrl = config?.icecastUrl ?? status?.icecastUrl ?? status?.streamUrl ?? '';
+		if (!streamUrl) {
+			return;
+		}
+		if (options.restart || streamUrl !== directMonitorBaseUrl || !directMonitorAudio.src) {
+			directMonitorBaseUrl = streamUrl;
+			const separator = streamUrl.includes('?') ? '&' : '?';
+			directMonitorAudio.src = `${streamUrl}${separator}monitor=${Date.now()}`;
+			directMonitorAudio.load();
+		}
+
+		try {
+			await directMonitorAudio.play();
+		} catch {
+			if (monitor && directOnAir && onAir) {
+				errorMessage = 'Local monitor could not start. Toggle Local monitor again.';
+			}
+		}
+	}
+
+	function stopDirectMonitor() {
+		directMonitorBaseUrl = '';
+		if (!directMonitorAudio) {
+			return;
+		}
+		directMonitorAudio.pause();
+		directMonitorAudio.removeAttribute('src');
+		directMonitorAudio.load();
 	}
 
 	async function retryMic() {
@@ -448,7 +495,7 @@
 			micDeviceId: selectedMicId,
 			micColor,
 			duckingDb: Number(duckingDb),
-			monitor
+			monitor: activeBroadcastMode === 'direct' || (activeBroadcastMode === null && broadcastMode === 'direct') ? false : monitor
 		};
 	}
 
@@ -791,6 +838,8 @@
 		</footer>
 	{/if}
 </main>
+
+<audio bind:this={directMonitorAudio} preload="none" aria-hidden="true"></audio>
 
 <style>
 	.studio-shell {
