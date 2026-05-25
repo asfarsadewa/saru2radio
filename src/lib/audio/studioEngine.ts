@@ -161,9 +161,7 @@ export class StudioEngine {
 		}
 
 		this.context = createAudioContext(AudioContextConstructor);
-		if (this.context.state === 'suspended') {
-			await this.context.resume();
-		}
+		await this.ensureContextRunning();
 
 		this.encoder = new LiveMp3Encoder(this.context.sampleRate, options.bitrateKbps);
 		this.socket = await openSourceSocket(options.bitrateKbps);
@@ -242,9 +240,7 @@ export class StudioEngine {
 		}
 
 		this.context = createAudioContext(AudioContextConstructor);
-		if (this.context.state === 'suspended') {
-			await this.context.resume();
-		}
+		await this.ensureContextRunning();
 
 		this.socket = await openTalkBreakSocket();
 		const talkSocket = this.socket;
@@ -381,12 +377,13 @@ export class StudioEngine {
 		this.currentIndex = currentIndex >= 0 ? currentIndex : 0;
 	}
 
-	setMicOpen(open: boolean) {
+	async setMicOpen(open: boolean) {
 		this.micOpen = open;
 		if (open && !this.micGraph) {
 			this.callbacks?.onError('Microphone is not ready yet. Allow browser mic access, choose an input, or press Retry mic.');
 			return;
 		}
+		await this.ensureContextRunning();
 		if (this.mode === 'talk') {
 			if (open) {
 				this.beginTalkBreak();
@@ -421,6 +418,7 @@ export class StudioEngine {
 			return;
 		}
 
+		await this.ensureContextRunning();
 		await this.attachMicrophone();
 		this.applyDucking();
 	}
@@ -430,8 +428,19 @@ export class StudioEngine {
 			return;
 		}
 
+		await this.ensureContextRunning();
 		await this.attachMicrophone();
 		this.applyDucking();
+	}
+
+	private async ensureContextRunning() {
+		if (!this.context || this.context.state === 'closed') {
+			return;
+		}
+
+		if (this.context.state !== 'running') {
+			await this.context.resume();
+		}
 	}
 
 	private async attachMicrophone() {

@@ -174,38 +174,51 @@
 			return;
 		}
 		errorMessage = '';
+		const directMode = broadcastMode === 'direct';
+		let directTalkBreakStarted = false;
+		if (directMode) {
+			busyMessage = 'Starting talk break mic';
+			await engine.stop();
+			micLatched = false;
+			micHeld = false;
+			micReady = false;
+			micLevel = 0;
+			try {
+				await engine.startTalkBreak(getEngineOptions(), getEngineCallbacks());
+				await refreshMicrophones();
+				directTalkBreakStarted = true;
+			} catch (error) {
+				await engine.stop();
+				setError(error);
+			}
+		}
 		busyMessage = 'Checking radio copies';
 		try {
 			library = await getLibrary();
 		} catch (error) {
+			if (directTalkBreakStarted) {
+				await engine.stop();
+			}
 			busyMessage = '';
 			setError(error);
 			return;
 		}
 		buildQueue();
 		if (queue.length === 0) {
+			if (directTalkBreakStarted) {
+				await engine.stop();
+			}
 			busyMessage = '';
 			errorMessage = 'Prepare at least one radio copy before going on air.';
 			return;
 		}
 
 		try {
-			if (broadcastMode === 'direct') {
+			if (directMode) {
 				busyMessage = 'Starting direct stream';
-				await engine.stop();
 				status = await startBroadcast(queue.map((track) => track.id));
 				activeBroadcastMode = 'direct';
-				micLatched = false;
-				micHeld = false;
-				micReady = false;
-				micLevel = 0;
 				outputLevel = 0.72;
-				try {
-					await engine.startTalkBreak(getEngineOptions(), getEngineCallbacks());
-					await refreshMicrophones();
-				} catch (error) {
-					setError(error);
-				}
 			} else {
 				busyMessage = 'Starting DJ mixer';
 				await engine.start(queue, getEngineOptions(), getEngineCallbacks());
@@ -251,7 +264,7 @@
 
 	function setMic(open: boolean) {
 		micHeld = open;
-		applyMicState();
+		void applyMicState();
 	}
 
 	function beginMicHold(event: PointerEvent) {
@@ -270,7 +283,7 @@
 
 	function toggleLatch() {
 		micLatched = !micLatched;
-		applyMicState();
+		void applyMicState();
 	}
 
 	function applyAudioOptions() {
@@ -308,11 +321,15 @@
 	function closeMicControl() {
 		micHeld = false;
 		micLatched = false;
-		engine.setMicOpen(false);
+		void engine.setMicOpen(false).catch(setError);
 	}
 
-	function applyMicState() {
-		engine.setMicOpen(micHeld || micLatched);
+	async function applyMicState() {
+		try {
+			await engine.setMicOpen(micHeld || micLatched);
+		} catch (error) {
+			setError(error);
+		}
 	}
 
 	function getEngineCallbacks() {
