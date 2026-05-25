@@ -2,10 +2,44 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { LibraryManager } from '../server/library.js';
+import { LibraryManager, resolveRadioToolPath } from '../server/library.js';
+import { RADIO_SOUND_EXE } from '../server/paths.js';
 import { StudioStateStore } from '../server/studio-state.js';
 
 describe('LibraryManager', () => {
+	it('resolves the repo-local radio tool path unless RADIO_SOUND_EXE is set', () => {
+		const original = process.env.RADIO_SOUND_EXE;
+
+		try {
+			delete process.env.RADIO_SOUND_EXE;
+			expect(resolveRadioToolPath()).toBe(RADIO_SOUND_EXE);
+
+			const customToolPath = path.join('C:', 'CustomTools', 'make-radio-sound.exe');
+			process.env.RADIO_SOUND_EXE = customToolPath;
+			expect(resolveRadioToolPath()).toBe(path.resolve(customToolPath));
+		} finally {
+			if (original === undefined) {
+				delete process.env.RADIO_SOUND_EXE;
+			} else {
+				process.env.RADIO_SOUND_EXE = original;
+			}
+		}
+	});
+
+	it('points users at the setup script when preparation is requested without the tool', async () => {
+		const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'saru2radio-missing-tool-'));
+
+		try {
+			await fs.writeFile(path.join(directory, 'root.mp3'), 'not-real-audio');
+			const manager = new LibraryManager(null);
+			await manager.scan(directory);
+
+			await expect(manager.prepare()).rejects.toThrow('npm run setup:radio-sound');
+		} finally {
+			await fs.rm(directory, { recursive: true, force: true });
+		}
+	});
+
 	it('can scan only the selected directory root for CLI preparation', async () => {
 		const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'saru2radio-library-'));
 

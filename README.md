@@ -49,7 +49,7 @@ There are two broadcast paths:
 - Node.js compatible with the current dependencies.
 - npm.
 - Icecast for Windows extracted under `.tools/icecast`.
-- Optional: `make-radio-sound.exe` for preparing retro `.radio.mp3` copies.
+- Optional: Python 3 for building the vendored `make-radio-sound.exe` used to prepare retro `.radio.mp3` copies.
 - Optional: `cloudflared` for public tunnel control.
 
 Expected Icecast path:
@@ -59,14 +59,22 @@ Expected Icecast path:
   icecast/
     bin/
       icecast.exe
+  make-radio-sound/
+    make-radio-sound.exe
 ```
 
-`node_modules`, `dist`, `.saru2radio`, `.tools`, and local environment files are intentionally ignored by git.
+`node_modules`, `dist`, `.saru2radio`, `.tools`, and local environment files are intentionally ignored by git. The `make-radio-sound` source is vendored under `tools/make-radio-sound`; its generated executable stays under ignored `.tools`.
 
 ## Install
 
 ```powershell
 npm install
+```
+
+Build the vendored retro-audio preparation tool:
+
+```powershell
+npm run setup:radio-sound
 ```
 
 Build the browser bundles:
@@ -102,7 +110,13 @@ The app can scan a folder of ready MP3 files directly. For the intended retro so
 By default the app looks for the tool at:
 
 ```text
-..\make-radio-sound\dist\make-radio-sound.exe
+.tools\make-radio-sound\make-radio-sound.exe
+```
+
+Build that executable from the vendored source:
+
+```powershell
+npm run setup:radio-sound
 ```
 
 You can override it:
@@ -278,7 +292,7 @@ It also:
 | `LISTENER_REQUEST_LIMIT` | `6` | Public listener requests allowed per client window. |
 | `LISTENER_REQUEST_WINDOW_MS` | `60000` | Listener request rate-limit window in milliseconds. |
 | `RADIO_BITRATE_KBPS` | `128` | Browser encoder/source pacer bitrate target. |
-| `RADIO_SOUND_EXE` | `..\make-radio-sound\dist\make-radio-sound.exe` | Retro audio preparation tool path. |
+| `RADIO_SOUND_EXE` | `.tools\make-radio-sound\make-radio-sound.exe` | Retro audio preparation tool path. |
 | `SARU2RADIO_TUNNEL_CONFIG` | `.saru2radio/cloudflare-named-tunnel.json` | Optional named Cloudflare tunnel config. |
 
 Icecast runtime secrets are generated in:
@@ -360,11 +374,13 @@ Also check that port `8010` is free or already serving Icecast.
 
 ### `make-radio-sound.exe was not found`
 
-Set `RADIO_SOUND_EXE` or place the sibling `make-radio-sound` repo at:
+Build the vendored tool:
 
-```text
-..\make-radio-sound\dist\make-radio-sound.exe
+```powershell
+npm run setup:radio-sound
 ```
+
+Or set `RADIO_SOUND_EXE` to a custom `make-radio-sound.exe` path.
 
 ### Listener cannot hear the station
 

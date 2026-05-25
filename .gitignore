@@ -7,3 +7,7 @@ test-results/
 .tools/
 .env
 *.local
+tools/make-radio-sound/.venv/
+tools/make-radio-sound/build/
+tools/make-radio-sound/dist/
+tools/make-radio-sound/*.spec.bak

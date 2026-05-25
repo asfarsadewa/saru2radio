@@ -14,7 +14,7 @@ import {
 	stableTrackSeed,
 	type CacheFingerprint
 } from './library-core.js';
-import { RADIO_SOUND_FALLBACK_EXE } from './paths.js';
+import { RADIO_SOUND_EXE } from './paths.js';
 
 const execFileAsync = promisify(execFile);
 const CACHE_DIR_NAME = '.saru2radio-cache';
@@ -149,7 +149,7 @@ export class LibraryManager {
 		}
 
 		if (!this.radioToolPath) {
-			throw new Error('make-radio-sound.exe was not found. Set RADIO_SOUND_EXE or keep the sibling repo in place.');
+			throw new Error('make-radio-sound.exe was not found. Run `npm run setup:radio-sound` or set RADIO_SOUND_EXE.');
 		}
 
 		this.state.preparing = true;
@@ -245,7 +245,7 @@ export function resolveRadioToolPath(): string | null {
 		return path.resolve(configured);
 	}
 
-	return RADIO_SOUND_FALLBACK_EXE;
+	return RADIO_SOUND_EXE;
 }
 
 async function findAudioFiles(directory: string, options: Required<ScanOptions>): Promise<string[]> {

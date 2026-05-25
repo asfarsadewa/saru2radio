@@ -14,7 +14,7 @@ if (!directory) {
 
 const radioToolPath = await resolveExistingPath(resolveRadioToolPath());
 if (!radioToolPath) {
-	console.error('make-radio-sound.exe was not found. Set RADIO_SOUND_EXE or keep C:\\Users\\asfar\\repo\\make-radio-sound in place.');
+	console.error('make-radio-sound.exe was not found. Run `npm run setup:radio-sound` or set RADIO_SOUND_EXE.');
 	process.exit(2);
 }
 
