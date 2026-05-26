@@ -9,6 +9,9 @@ test('studio dashboard renders local booth controls', async ({ page }) => {
 	await expect(page.getByRole('button', { name: /(ON|OFF) AIR/i })).toBeVisible();
 	await expect(page.getByText('Broadcast library')).toBeVisible();
 	await expect(page.getByText('0 LISTENERS')).toBeVisible();
+	await expect(page.getByRole('button', { name: 'Voice' })).toBeVisible();
+	await page.getByRole('button', { name: 'Voice' }).click();
+	await expect(page.getByText('Ambient bed')).toBeVisible();
 	await expect(page.getByText('listener requests', { exact: true })).toBeVisible();
 	await expect(page.getByRole('button', { name: /No mic/i })).toBeDisabled();
 });

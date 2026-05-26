@@ -20,6 +20,8 @@ type EngineOptions = {
 	micColor: MicColorMode;
 	duckingDb: number;
 	monitor: boolean;
+	ambientBedEnabled: boolean;
+	ambientBedLevel: number;
 };
 
 export type MicColorMode = 'clean' | 'broadcast' | 'shortwave';
@@ -105,6 +107,7 @@ const MIC_COLOR_SETTINGS: Record<MicColorMode, MicColorSettings> = {
 };
 const MIC_METER_FLOOR = 0.008;
 const MIC_METER_CEILING = 0.16;
+const VOICE_AMBIENT_MAX_GAIN = 0.025;
 const EMPTY_MIC_STATE: MicCaptureState = {
 	connected: false,
 	label: '',
@@ -125,6 +128,9 @@ export class StudioEngine {
 	private micGain: GainNode | null = null;
 	private micGraph: MicAudioGraph | null = null;
 	private monitorGain: GainNode | null = null;
+	private ambientSource: AudioBufferSourceNode | null = null;
+	private ambientFilter: BiquadFilterNode | null = null;
+	private ambientGain: GainNode | null = null;
 	private currentSource: AudioBufferSourceNode | null = null;
 	private currentQueue: Track[] = [];
 	private currentIndex = 0;
@@ -133,7 +139,7 @@ export class StudioEngine {
 	private options: EngineOptions | null = null;
 	private running = false;
 	private micOpen = false;
-	private mode: 'mixer' | 'talk' | null = null;
+	private mode: 'mixer' | 'talk' | 'voice' | null = null;
 	private talkActive = false;
 	private skipRequested = false;
 
@@ -218,6 +224,102 @@ export class StudioEngine {
 
 		this.updateLevel();
 		await this.playCurrentTrack();
+	}
+
+	async startVoiceProgram(options: EngineOptions, callbacks: EngineCallbacks) {
+		if (this.running) {
+			await this.stop();
+		}
+
+		this.callbacks = callbacks;
+		this.options = options;
+		this.currentQueue = [];
+		this.currentIndex = 0;
+		this.running = true;
+		this.micOpen = false;
+		this.mode = 'voice';
+		this.talkActive = false;
+
+		const AudioContextConstructor = window.AudioContext ?? window.webkitAudioContext;
+		if (!AudioContextConstructor) {
+			throw new Error('Web Audio is not available in this browser.');
+		}
+
+		try {
+			this.context = createAudioContext(AudioContextConstructor);
+			await this.ensureContextRunning();
+
+			this.encoder = new LiveMp3Encoder(this.context.sampleRate, options.bitrateKbps);
+
+			const limiter = this.context.createDynamicsCompressor();
+			limiter.threshold.value = -8;
+			limiter.knee.value = 10;
+			limiter.ratio.value = 10;
+			limiter.attack.value = 0.003;
+			limiter.release.value = 0.16;
+
+			this.micGain = this.context.createGain();
+			this.micGain.gain.value = 0;
+			this.micGain.connect(limiter);
+
+			this.ambientSource = createNoiseSource(this.context);
+			this.ambientFilter = this.context.createBiquadFilter();
+			this.ambientFilter.type = 'bandpass';
+			this.ambientFilter.frequency.value = 900;
+			this.ambientFilter.Q.value = 0.45;
+			this.ambientGain = this.context.createGain();
+			this.ambientGain.gain.value = ambientBedGain(options);
+			this.ambientSource.connect(this.ambientFilter);
+			this.ambientFilter.connect(this.ambientGain);
+			this.ambientGain.connect(limiter);
+			this.ambientSource.start();
+
+			await this.attachMicrophone({ throwOnFailure: true });
+			if (!this.micGraph) {
+				throw new Error('Microphone is unavailable.');
+			}
+
+			this.analyser = this.context.createAnalyser();
+			this.analyser.fftSize = 512;
+			this.analyser.smoothingTimeConstant = 0.5;
+			this.analyserData = new Uint8Array(this.analyser.fftSize);
+			limiter.connect(this.analyser);
+
+			this.processor = this.context.createScriptProcessor(MIXER_BUFFER_SIZE, 1, 1);
+			this.processor.onaudioprocess = (event) => {
+				const input = event.inputBuffer.getChannelData(0);
+				const output = event.outputBuffer.getChannelData(0);
+				output.fill(0);
+				this.sendEncoded(input);
+			};
+			limiter.connect(this.processor);
+			this.processor.connect(this.context.destination);
+
+			this.monitorGain = this.context.createGain();
+			this.monitorGain.gain.value = options.monitor ? 1 : 0;
+			limiter.connect(this.monitorGain);
+			this.monitorGain.connect(this.context.destination);
+
+			this.socket = await openSourceSocket(options.bitrateKbps);
+			const sourceSocket = this.socket;
+			this.callbacks.onSourceState(true);
+			sourceSocket.addEventListener('close', () => {
+				if (this.socket === sourceSocket && this.mode === 'voice') {
+					this.callbacks?.onSourceState(false);
+				}
+			});
+			sourceSocket.addEventListener('error', () => {
+				if (this.socket === sourceSocket && this.mode === 'voice') {
+					this.callbacks?.onError('Voice program source bridge failed.');
+				}
+			});
+
+			this.updateLevel();
+			this.applyDucking();
+		} catch (error) {
+			await this.stop();
+			throw error;
+		}
 	}
 
 	async startTalkBreak(options: EngineOptions, callbacks: EngineCallbacks) {
@@ -327,11 +429,22 @@ export class StudioEngine {
 		this.musicGain?.disconnect();
 		this.micGain?.disconnect();
 		this.monitorGain?.disconnect();
+		this.ambientSource?.disconnect();
+		this.ambientFilter?.disconnect();
+		this.ambientGain?.disconnect();
+		try {
+			this.ambientSource?.stop();
+		} catch {
+			// The ambient bed may already be stopped during teardown.
+		}
 		this.processor = null;
 		this.analyser = null;
 		this.musicGain = null;
 		this.micGain = null;
 		this.monitorGain = null;
+		this.ambientSource = null;
+		this.ambientFilter = null;
+		this.ambientGain = null;
 		this.detachMicrophone();
 
 		if (this.context && this.context.state !== 'closed') {
@@ -339,7 +452,7 @@ export class StudioEngine {
 		}
 		this.context = null;
 		this.callbacks?.onMicLevel(0);
-		if (mode === 'mixer') {
+		if (mode === 'mixer' || mode === 'voice') {
 			this.callbacks?.onSourceState(false);
 		}
 	}
@@ -405,6 +518,9 @@ export class StudioEngine {
 			configureMicColor(this.micGraph, options.micColor);
 		}
 		this.monitorGain?.gain.setTargetAtTime(this.options.monitor ? 1 : 0, this.context.currentTime, 0.03);
+		if (this.ambientGain && (typeof options.ambientBedEnabled === 'boolean' || typeof options.ambientBedLevel === 'number')) {
+			this.ambientGain.gain.setTargetAtTime(ambientBedGain(this.options), this.context.currentTime, 0.05);
+		}
 		this.applyDucking();
 	}
 
@@ -443,7 +559,7 @@ export class StudioEngine {
 		}
 	}
 
-	private async attachMicrophone() {
+	private async attachMicrophone(options: { throwOnFailure?: boolean } = {}) {
 		if (!this.context || !this.micGain) {
 			return;
 		}
@@ -586,7 +702,10 @@ export class StudioEngine {
 				...EMPTY_MIC_STATE,
 				message
 			});
-			this.callbacks?.onError(`${message} Music streaming can continue.`);
+			this.callbacks?.onError(options.throwOnFailure ? message : `${message} Music streaming can continue.`);
+			if (options.throwOnFailure) {
+				throw new Error(message);
+			}
 		}
 	}
 
@@ -718,6 +837,13 @@ export class StudioEngine {
 		if (this.mode === 'talk') {
 			const micTarget = this.talkActive && Boolean(this.micGraph) ? this.options.micVolume : 0;
 			this.micGain?.gain.setTargetAtTime(micTarget, this.context.currentTime, micTarget > 0 ? 0.015 : 0.08);
+			return;
+		}
+
+		if (this.mode === 'voice') {
+			const micTarget = this.micOpen && Boolean(this.micGraph) ? this.options.micVolume : 0;
+			this.micGain?.gain.setTargetAtTime(micTarget, this.context.currentTime, micTarget > 0 ? 0.015 : 0.08);
+			this.ambientGain?.gain.setTargetAtTime(ambientBedGain(this.options), this.context.currentTime, 0.05);
 			return;
 		}
 
@@ -883,6 +1009,14 @@ function configureMicColor(graph: MicAudioGraph, mode: MicColorMode) {
 	graph.compressor.release.value = settings.compressorRelease;
 	graph.shaper.curve = makeSoftClipCurve(settings.drive);
 	graph.noiseGain.gain.setTargetAtTime(settings.noiseGain, graph.noiseGain.context.currentTime, 0.03);
+}
+
+function ambientBedGain(options: Pick<EngineOptions, 'ambientBedEnabled' | 'ambientBedLevel'>): number {
+	if (!options.ambientBedEnabled) {
+		return 0;
+	}
+
+	return Math.min(1, Math.max(0, options.ambientBedLevel)) * VOICE_AMBIENT_MAX_GAIN;
 }
 
 function makeSoftClipCurve(drive: number): Float32Array<ArrayBuffer> {

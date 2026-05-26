@@ -42,6 +42,7 @@
 	import type { BroadcastStatus, LibraryState, ListenerMessage, NowPlaying, ServerConfig, Track, TunnelState } from '../lib/types';
 
 	type BroadcastMode = 'direct' | 'mixer';
+	type DirectProgramMode = 'songs' | 'voice';
 
 	let config: ServerConfig | null = null;
 	let library: LibraryState = {
@@ -75,7 +76,11 @@
 	let duckingDb = -12;
 	let monitor = false;
 	let broadcastMode: BroadcastMode = 'direct';
+	let directProgram: DirectProgramMode = 'songs';
 	let activeBroadcastMode: BroadcastMode | null = null;
+	let activeDirectProgram: DirectProgramMode | null = null;
+	let ambientBedEnabled = true;
+	let ambientBedLevel = 0.28;
 	let micLatched = false;
 	let micHeld = false;
 	let micOpen = false;
@@ -103,10 +108,27 @@
 	$: micLevelStyle = `--mic-level: ${micLevel.toFixed(3)};`;
 	$: mixerOnAir = activeBroadcastMode === 'mixer';
 	$: directOnAir = activeBroadcastMode === 'direct';
+	$: directModeSelected = broadcastMode === 'direct';
+	$: voiceProgramSelected = directModeSelected && directProgram === 'voice';
+	$: voiceProgramOnAir = directOnAir && activeDirectProgram === 'voice';
+	$: directSongsOnAir = directOnAir && activeDirectProgram !== 'voice';
+	$: ambientBedLabel = `Bed ${Math.round(ambientBedLevel * 100)}%`;
 	$: micButtonDisabled = !onAir || !micReady || micMuted;
-	$: micButtonLabel = !micReady || micMuted ? 'No mic' : micOpen ? (directOnAir ? 'Talking' : 'Mic open') : directOnAir ? 'Hold talk' : 'Hold mic';
-	$: micStatusLabel = micReady ? (micMuted ? 'MIC MUTED' : directOnAir ? 'TALK BREAK READY' : 'MIC READY') : 'MIC NOT CONNECTED';
-	$: micDetail = micMessage || micLabel || (directOnAir ? 'Hold to pause songs and talk.' : 'Choose an input, then go on air.');
+	$: micButtonLabel = !micReady || micMuted
+		? 'No mic'
+		: voiceProgramOnAir
+			? micOpen
+				? 'Mic live'
+				: 'Open mic'
+			: micOpen
+				? directOnAir
+					? 'Talking'
+					: 'Mic open'
+				: directOnAir
+					? 'Hold talk'
+					: 'Hold mic';
+	$: micStatusLabel = micReady ? (micMuted ? 'MIC MUTED' : voiceProgramOnAir ? 'VOICE MIC READY' : directOnAir ? 'TALK BREAK READY' : 'MIC READY') : 'MIC NOT CONNECTED';
+	$: micDetail = micMessage || micLabel || (voiceProgramOnAir ? 'Voice program standby.' : directOnAir ? 'Hold to pause songs and talk.' : 'Choose an input, then go on air.');
 
 	onMount(async () => {
 		await refreshAll();
@@ -183,7 +205,7 @@
 			library = await scanLibrary(directoryInput, libraryRecursive);
 			await updateStudioState({ broadcastRecursive: libraryRecursive });
 			buildQueue();
-			if (directOnAir && queue.length > 0) {
+			if (directSongsOnAir && queue.length > 0) {
 				status = await updateBroadcastQueue(queue.map((track) => track.id));
 			}
 		} catch (error) {
@@ -216,6 +238,11 @@
 			return;
 		}
 		errorMessage = '';
+		if (broadcastMode === 'direct' && directProgram === 'voice') {
+			await startVoiceProgram();
+			return;
+		}
+
 		const directMode = broadcastMode === 'direct';
 		let directTalkBreakStarted = false;
 		if (directMode) {
@@ -260,12 +287,14 @@
 				busyMessage = 'Starting direct stream';
 				status = await startBroadcast(queue.map((track) => track.id));
 				activeBroadcastMode = 'direct';
+				activeDirectProgram = 'songs';
 				outputLevel = 0.05;
 				await syncDirectMonitor({ restart: true });
 			} else {
 				busyMessage = 'Starting DJ mixer';
 				await engine.start(queue, getEngineOptions(), getEngineCallbacks());
 				activeBroadcastMode = 'mixer';
+				activeDirectProgram = null;
 				status = await getStatus();
 				await refreshMicrophones();
 				outputLevel = 0.72;
@@ -276,6 +305,56 @@
 			await engine.stop();
 			await stopBroadcast();
 			activeBroadcastMode = null;
+			activeDirectProgram = null;
+			setError(error);
+		} finally {
+			busyMessage = '';
+		}
+	}
+
+	async function startVoiceProgram() {
+		busyMessage = 'Starting voice program';
+		stopDirectMonitor();
+		await engine.stop();
+		micLatched = false;
+		micHeld = false;
+		micReady = false;
+		micLevel = 0;
+		try {
+			await engine.startVoiceProgram(getEngineOptions(), getEngineCallbacks());
+			await refreshMicrophones();
+			status = await getStatus();
+			activeBroadcastMode = 'direct';
+			activeDirectProgram = 'voice';
+			outputLevel = 0.08;
+			nowPlaying = {
+				trackId: null,
+				title: 'Live voice',
+				artist: config?.stationName ?? 'saru2radio',
+				startedAt: new Date().toISOString(),
+				duration: null
+			};
+			try {
+				nowPlaying = await updateNowPlaying({
+					trackId: null,
+					title: 'Live voice',
+					artist: config?.stationName ?? 'saru2radio',
+					duration: null
+				});
+			} catch {
+				// The stream can keep running if metadata refresh races the source socket.
+			}
+			await syncDirectMonitor({ restart: true });
+		} catch (error) {
+			stopDirectMonitor();
+			await engine.stop();
+			try {
+				status = await stopBroadcast();
+			} catch {
+				// The source may not have reached the server yet.
+			}
+			activeBroadcastMode = null;
+			activeDirectProgram = null;
 			setError(error);
 		} finally {
 			busyMessage = '';
@@ -294,11 +373,15 @@
 		micMuted = false;
 		status = await stopBroadcast();
 		activeBroadcastMode = null;
+		activeDirectProgram = null;
 		nowPlaying = null;
 		outputLevel = 0.05;
 	}
 
 	async function skipTrack() {
+		if (voiceProgramOnAir) {
+			return;
+		}
 		if (activeBroadcastMode === 'direct') {
 			status = await skipBroadcast();
 			nowPlaying = await getNowPlaying();
@@ -326,9 +409,38 @@
 		setMic(false);
 	}
 
+	function handleMicPointerDown(event: PointerEvent) {
+		if (voiceProgramOnAir) {
+			return;
+		}
+		beginMicHold(event);
+	}
+
+	function handleMicPointerUp(event: PointerEvent) {
+		if (voiceProgramOnAir) {
+			return;
+		}
+		endMicHold(event);
+	}
+
+	function handleMicClick() {
+		if (!voiceProgramOnAir) {
+			return;
+		}
+		toggleLatch();
+	}
+
 	function toggleLatch() {
 		micLatched = !micLatched;
 		void applyMicState();
+	}
+
+	function setDirectProgram(mode: DirectProgramMode) {
+		if (onAir) {
+			return;
+		}
+		directProgram = mode;
+		closeMicControl();
 	}
 
 	function applyAudioOptions() {
@@ -564,6 +676,9 @@
 		if (!track.cacheReady) {
 			return;
 		}
+		if (voiceProgramOnAir) {
+			return;
+		}
 		const previousQueue = queue;
 		queue = cueTrackInQueue(track, currentReadyTracks(), queue, ordered);
 		if (onAir) {
@@ -594,7 +709,7 @@
 		ordered = !ordered;
 		buildQueue();
 		try {
-			if (directOnAir && queue.length > 0) {
+			if (directSongsOnAir && queue.length > 0) {
 				status = await updateBroadcastQueue(queue.map((track) => track.id));
 			}
 			await updateStudioState({ ordered });
@@ -613,7 +728,9 @@
 			micDeviceId: selectedMicId,
 			micColor,
 			duckingDb: Number(duckingDb),
-			monitor: activeBroadcastMode === 'direct' || (activeBroadcastMode === null && broadcastMode === 'direct') ? false : monitor
+			monitor: activeBroadcastMode === 'direct' || (activeBroadcastMode === null && broadcastMode === 'direct') ? false : monitor,
+			ambientBedEnabled,
+			ambientBedLevel: Number(ambientBedLevel)
 		};
 	}
 
@@ -738,7 +855,7 @@
 						class:error={Boolean(track.error)}
 						class="track-row"
 						type="button"
-						disabled={!track.cacheReady}
+						disabled={!track.cacheReady || voiceProgramOnAir}
 						on:click={() => playTrack(track)}
 					>
 						<div>
@@ -786,10 +903,10 @@
 						ON AIR
 					{/if}
 				</button>
-				<button class="icon-button" type="button" disabled={!onAir} aria-label="Skip track" on:click={skipTrack}>
+				<button class="icon-button" type="button" disabled={!onAir || voiceProgramOnAir} aria-label="Skip track" on:click={skipTrack}>
 					<SkipForward />
 				</button>
-				<button class="tool-button" type="button" on:click={toggleOrderMode}>
+				<button class="tool-button" type="button" disabled={voiceProgramSelected || voiceProgramOnAir} on:click={toggleOrderMode}>
 					<Shuffle />
 					{ordered ? 'Ordered' : 'Shuffle'}
 				</button>
@@ -797,6 +914,12 @@
 					<option value="direct">Direct songs</option>
 					<option value="mixer">DJ mixer</option>
 				</select>
+				{#if directModeSelected || directOnAir}
+					<div class="direct-program-toggle" aria-label="Direct program">
+						<button class:active={directProgram === 'songs'} type="button" disabled={onAir} on:click={() => setDirectProgram('songs')}>Songs</button>
+						<button class:active={directProgram === 'voice'} type="button" disabled={onAir} on:click={() => setDirectProgram('voice')}>Voice</button>
+					</div>
+				{/if}
 			</div>
 
 			<div class="facade panel">
@@ -867,9 +990,10 @@
 					class="mic-button"
 					type="button"
 					disabled={micButtonDisabled}
-					on:pointerdown={beginMicHold}
-					on:pointerup={endMicHold}
-					on:pointercancel={endMicHold}
+					on:click={handleMicClick}
+					on:pointerdown={handleMicPointerDown}
+					on:pointerup={handleMicPointerUp}
+					on:pointercancel={handleMicPointerUp}
 				>
 					<Mic />
 					{micButtonLabel}
@@ -916,7 +1040,7 @@
 
 			<label class="range">
 				<span>Music</span>
-				<input type="range" min="0" max="1.2" step="0.01" bind:value={musicVolume} disabled={directOnAir} on:input={applyAudioOptions} />
+				<input type="range" min="0" max="1.2" step="0.01" bind:value={musicVolume} disabled={directOnAir || voiceProgramSelected} on:input={applyAudioOptions} />
 			</label>
 			<label class="range">
 				<span>Mic</span>
@@ -924,8 +1048,18 @@
 			</label>
 			<label class="range">
 				<span>Ducking {duckingDb} dB</span>
-				<input type="range" min="-24" max="-3" step="1" bind:value={duckingDb} disabled={directOnAir} on:input={applyAudioOptions} />
+				<input type="range" min="-24" max="-3" step="1" bind:value={duckingDb} disabled={directOnAir || voiceProgramSelected} on:input={applyAudioOptions} />
 			</label>
+			{#if voiceProgramSelected || voiceProgramOnAir}
+				<label class="toggle">
+					<input type="checkbox" bind:checked={ambientBedEnabled} on:change={applyAudioOptions} />
+					<span>Ambient bed</span>
+				</label>
+				<label class="range">
+					<span>{ambientBedLabel}</span>
+					<input type="range" min="0" max="1" step="0.01" bind:value={ambientBedLevel} disabled={!ambientBedEnabled} on:input={applyAudioOptions} />
+				</label>
+			{/if}
 			<label class="toggle">
 				<input type="checkbox" bind:checked={monitor} on:change={applyAudioOptions} />
 				<span>Local monitor</span>
@@ -938,7 +1072,7 @@
 						<p class:active={nowPlaying?.trackId === track.id}>{track.title}</p>
 					{/each}
 					{#if queue.length === 0}
-						<p class="empty-note">Prepared songs appear here.</p>
+						<p class="empty-note">{voiceProgramSelected || voiceProgramOnAir ? 'Voice program' : 'Prepared songs appear here.'}</p>
 					{/if}
 				</div>
 			</div>
@@ -1240,6 +1374,10 @@
 		padding: 10px;
 	}
 
+	.transport {
+		flex-wrap: wrap;
+	}
+
 	.broadcast-button {
 		display: inline-flex;
 		align-items: center;
@@ -1272,6 +1410,39 @@
 		font-weight: 800;
 		letter-spacing: 0.08em;
 		text-transform: uppercase;
+	}
+
+	.direct-program-toggle {
+		display: grid;
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+		flex: 0 1 132px;
+		min-height: 58px;
+		overflow: hidden;
+		border: 1px solid var(--line);
+		border-radius: 4px;
+		background: rgba(255, 255, 255, 0.45);
+	}
+
+	.direct-program-toggle button {
+		min-width: 0;
+		padding: 0 8px;
+		border: 0;
+		border-radius: 0;
+		background: transparent;
+		color: var(--ink-dim);
+		font-size: 10px;
+		font-weight: 800;
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
+	}
+
+	.direct-program-toggle button + button {
+		border-left: 1px solid var(--line);
+	}
+
+	.direct-program-toggle button.active {
+		background: var(--ink);
+		color: var(--paper);
 	}
 
 	.facade p {

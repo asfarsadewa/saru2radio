@@ -10,6 +10,7 @@ The app is designed for a small private/boutique broadcast: start it only when y
 - Public listener facade at `http://127.0.0.1:8012/`.
 - Local Icecast relay on `127.0.0.1:8010/live.mp3`.
 - Direct song mode for stable server-side MP3 playout.
+- Voice program submode for direct mic-only broadcasts with an optional generated ambient bed.
 - DJ mixer mode for browser-side mixing/talk-over experiments.
 - Direct-mode hold-to-talk breaks: song playout pauses while the mic break is sent, then resumes.
 - Microphone input selection, meter, broadcast/shortwave/clean mic color modes, and local monitor.
@@ -41,6 +42,7 @@ Listeners
 There are two broadcast paths:
 
 - **Direct songs** is the default and recommended mode. Prepared/ready MP3 files are streamed server-side directly to Icecast. This keeps the song audio untouched during normal playback. Browser audio is used only for mic talk breaks.
+- **Voice program** is a Direct submode for mic-led segments such as news breaks. It uses the browser as the live source, does not require a prepared song queue, and can keep a quiet generated ambience under the mic.
 - **DJ mixer** runs the song/mic mix through the browser's Web Audio graph. It is useful for live mixing behavior, but direct mode is the safer path for stable listener playback.
 
 ## Requirements
@@ -167,6 +169,8 @@ In the studio, scan either the original folder that contains `.saru2radio-cache`
 8. Use **Skip**, **Shuffle/Ordered**, or click a ready track for ad-hoc switching.
 9. Hold the mic button for a direct talk break. In direct mode the song pauses while the mic break is live.
 10. Click **OFF AIR** when finished.
+
+For a voice-only program, keep **Direct songs** selected, switch the Direct submode from **Songs** to **Voice**, then click **ON AIR**. The mic button latches on/off, and the ambient bed control sets the generated background level.
 
 ### Direct Song Switching
 
