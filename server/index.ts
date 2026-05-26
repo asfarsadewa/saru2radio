@@ -237,6 +237,15 @@ function createStudioApp() {
 			next(error);
 		}
 	});
+	app.post('/api/broadcast/queue', (request, response, next) => {
+		try {
+			const queue = resolveBroadcastQueue(request.body?.trackIds);
+			playout.setQueue(queue);
+			response.json(currentStatus());
+		} catch (error) {
+			next(error);
+		}
+	});
 	app.post('/api/broadcast/skip', (_request, response) => {
 		playout.skip();
 		response.json(currentStatus());

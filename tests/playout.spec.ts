@@ -2,7 +2,7 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { calculatePlayoutDelayMs, DirectMp3Playout, estimatePacedBytesPerSecond } from '../server/playout.js';
+import { calculatePlayoutDelayMs, DirectMp3Playout, estimatePacedBytesPerSecond, findCurrentTrackIndex } from '../server/playout.js';
 import type { Track } from '../src/lib/types.js';
 
 let tempDirs: string[] = [];
@@ -40,6 +40,14 @@ describe('DirectMp3Playout', () => {
 	it('keeps a source lead before waiting between playout writes', () => {
 		expect(calculatePlayoutDelayMs(10_000, 8_000, 3_000)).toBe(0);
 		expect(calculatePlayoutDelayMs(12_500, 8_000, 3_000)).toBe(1500);
+	});
+
+	it('finds the current track in a replacement direct queue', async () => {
+		const first = await createTrack('first');
+		const second = await createTrack('second');
+
+		expect(findCurrentTrackIndex([first, second], 'second')).toBe(1);
+		expect(findCurrentTrackIndex([first, second], 'missing')).toBe(-1);
 	});
 
 	it('switches to an ad-hoc direct queue without reconnecting the source', async () => {

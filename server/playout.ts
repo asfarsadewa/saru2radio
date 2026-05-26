@@ -74,6 +74,16 @@ export class DirectMp3Playout {
 		this.skipRequested = true;
 	}
 
+	setQueue(queue: Track[]): void {
+		if (queue.length === 0) {
+			throw new Error('Prepare at least one radio copy before going on air.');
+		}
+
+		const currentTrack = this.currentTrack();
+		this.queue = queue;
+		this.currentIndex = currentTrack ? findCurrentTrackIndex(queue, currentTrack.id) : 0;
+	}
+
 	stop(disconnect = true): void {
 		this.running = false;
 		this.skipRequested = true;
@@ -114,7 +124,7 @@ export class DirectMp3Playout {
 
 	private async run(token: number): Promise<void> {
 		while (this.running && token === this.token) {
-			const track = this.queue[this.currentIndex % this.queue.length];
+			const track = this.currentTrack();
 			if (!track) {
 				break;
 			}
@@ -176,6 +186,26 @@ export class DirectMp3Playout {
 			resolve();
 		}
 	}
+
+	private currentTrack(): Track | null {
+		if (this.queue.length === 0) {
+			return null;
+		}
+		if (this.currentIndex < 0) {
+			return null;
+		}
+
+		return this.queue[positiveModulo(this.currentIndex, this.queue.length)] ?? null;
+	}
+}
+
+export function findCurrentTrackIndex(queue: Track[], currentTrackId: string): number {
+	const index = queue.findIndex((track) => track.id === currentTrackId);
+	return index >= 0 ? index : -1;
+}
+
+function positiveModulo(value: number, divisor: number): number {
+	return ((value % divisor) + divisor) % divisor;
 }
 
 export function estimatePacedBytesPerSecond(fileSize: number, durationSeconds: number | null): number {

@@ -33,10 +33,12 @@
 		startTunnel,
 		stopBroadcast,
 		stopTunnel,
+		updateBroadcastQueue,
 		updateNowPlaying,
 		updateStudioState
 	} from '../lib/api';
 	import { StudioEngine, type MicCaptureState, type MicColorMode } from '../lib/audio/studioEngine';
+	import { createPlaybackQueue, cueTrackInQueue, reconcileQueueWithTracks, rotateQueueToTrack } from '../lib/queue';
 	import type { BroadcastStatus, LibraryState, ListenerMessage, NowPlaying, ServerConfig, Track, TunnelState } from '../lib/types';
 
 	type BroadcastMode = 'direct' | 'mixer';
@@ -95,6 +97,7 @@
 	$: activeListeners = status?.activeListeners ?? 0;
 	$: activeListenerLabel = `${activeListeners} ${activeListeners === 1 ? 'LISTENER' : 'LISTENERS'}`;
 	$: listenerUrl = tunnel.url ?? config?.listenerUrl ?? '';
+	$: displayQueue = rotateQueueToTrack(queue, nowPlaying?.trackId);
 	$: levelStyle = `--level: ${outputLevel.toFixed(3)};`;
 	$: micOpen = micHeld || micLatched;
 	$: micLevelStyle = `--mic-level: ${micLevel.toFixed(3)};`;
@@ -180,6 +183,9 @@
 			library = await scanLibrary(directoryInput, libraryRecursive);
 			await updateStudioState({ broadcastRecursive: libraryRecursive });
 			buildQueue();
+			if (directOnAir && queue.length > 0) {
+				status = await updateBroadcastQueue(queue.map((track) => track.id));
+			}
 		} catch (error) {
 			setError(error);
 		} finally {
@@ -188,11 +194,21 @@
 	}
 
 	function buildQueue() {
-		const tracks = [...readyTracks];
-		queue = ordered ? tracks : shuffleTracks(tracks);
+		queue = createPlaybackQueue(currentReadyTracks(), ordered, nowPlaying?.trackId);
 		if (mixerOnAir && queue.length > 0) {
 			engine.setQueue(queue);
 		}
+	}
+
+	function reconcileDisplayedQueue() {
+		queue = reconcileQueueWithTracks(queue, currentReadyTracks(), ordered);
+		if (nowPlaying?.trackId) {
+			queue = rotateQueueToTrack(queue, nowPlaying.trackId);
+		}
+	}
+
+	function currentReadyTracks(): Track[] {
+		return library.tracks.filter((track) => track.cacheReady);
 	}
 
 	async function goOnAir() {
@@ -229,7 +245,7 @@
 			setError(error);
 			return;
 		}
-		buildQueue();
+		reconcileDisplayedQueue();
 		if (queue.length === 0) {
 			if (directTalkBreakStarted) {
 				await engine.stop();
@@ -548,27 +564,45 @@
 		if (!track.cacheReady) {
 			return;
 		}
+		const previousQueue = queue;
+		queue = cueTrackInQueue(track, currentReadyTracks(), queue, ordered);
 		if (onAir) {
 			if (activeBroadcastMode === 'direct') {
-				queue = [track, ...readyTracks.filter((candidate) => candidate.id !== track.id)];
-				status = await playBroadcastNow(queue.map((candidate) => candidate.id));
-				nowPlaying = await getNowPlaying();
+				try {
+					status = await playBroadcastNow(queue.map((candidate) => candidate.id));
+					nowPlaying = await getNowPlaying();
+				} catch (error) {
+					queue = previousQueue;
+					setError(error);
+				}
 				return;
 			}
 			try {
 				await engine.playNow(track);
+				engine.setQueue(queue);
 			} catch (error) {
+				queue = previousQueue;
 				setError(error);
 			}
 			return;
 		}
-		queue = [track, ...readyTracks.filter((candidate) => candidate.id !== track.id)];
 	}
 
 	async function toggleOrderMode() {
+		const previousOrdered = ordered;
+		const previousQueue = queue;
 		ordered = !ordered;
 		buildQueue();
-		await updateStudioState({ ordered });
+		try {
+			if (directOnAir && queue.length > 0) {
+				status = await updateBroadcastQueue(queue.map((track) => track.id));
+			}
+			await updateStudioState({ ordered });
+		} catch (error) {
+			ordered = previousOrdered;
+			queue = previousQueue;
+			setError(error);
+		}
 	}
 
 	function getEngineOptions() {
@@ -615,15 +649,6 @@
 
 	function setError(error: unknown) {
 		errorMessage = error instanceof Error ? error.message : 'Unexpected error.';
-	}
-
-	function shuffleTracks(tracks: Track[]): Track[] {
-		const copy = [...tracks];
-		for (let index = copy.length - 1; index > 0; index -= 1) {
-			const next = Math.floor(Math.random() * (index + 1));
-			[copy[index], copy[next]] = [copy[next], copy[index]];
-		}
-		return copy;
 	}
 
 	function formatDuration(seconds: number | null): string {
@@ -909,8 +934,8 @@
 			<div class="queue-list">
 				<span class="eyebrow">queue</span>
 				<div class="queue-items">
-					{#each queue.slice(0, 8) as track (track.id)}
-						<p>{track.title}</p>
+					{#each displayQueue.slice(0, 8) as track (track.id)}
+						<p class:active={nowPlaying?.trackId === track.id}>{track.title}</p>
 					{/each}
 					{#if queue.length === 0}
 						<p class="empty-note">Prepared songs appear here.</p>
@@ -1463,6 +1488,11 @@
 		line-height: 18px;
 		text-overflow: ellipsis;
 		white-space: nowrap;
+	}
+
+	.queue-items p.active {
+		color: var(--signal);
+		font-weight: 700;
 	}
 
 	.queue-items .empty-note {

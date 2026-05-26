@@ -68,6 +68,13 @@ export function playBroadcastNow(trackIds: string[]): Promise<BroadcastStatus> {
 	});
 }
 
+export function updateBroadcastQueue(trackIds: string[]): Promise<BroadcastStatus> {
+	return requestJson<BroadcastStatus>('/api/broadcast/queue', {
+		method: 'POST',
+		body: JSON.stringify({ trackIds })
+	});
+}
+
 export function skipBroadcast(): Promise<BroadcastStatus> {
 	return requestJson<BroadcastStatus>('/api/broadcast/skip', { method: 'POST' });
 }
