@@ -16,7 +16,8 @@ describe('saru2radio listener edge Worker', () => {
 		expect(status).toMatchObject({
 			onAir: false,
 			icecastUrl: '',
-			listenerUrl: 'https://saru2radio.com'
+			listenerUrl: 'https://saru2radio.com',
+			activeListeners: 0
 		});
 		expect(nowPlaying).toMatchObject({ title: 'Off air', artist: 'saru2radio' });
 		expect(stream).toContain('offline');
@@ -74,7 +75,8 @@ describe('saru2radio listener edge Worker', () => {
 						icecastUrl: 'http://127.0.0.1:8010/live.mp3',
 						listenerUrl: 'https://origin.saru2radio.com',
 						tunnelUrl: 'https://origin.saru2radio.com',
-						sourceConnected: true
+						sourceConnected: true,
+						activeListeners: 3
 					}),
 					{
 						status: 200,
@@ -92,7 +94,8 @@ describe('saru2radio listener edge Worker', () => {
 			streamUrl: 'https://saru2radio.com/live.mp3',
 			icecastUrl: '',
 			listenerUrl: 'https://saru2radio.com',
-			tunnelUrl: 'https://saru2radio.com'
+			tunnelUrl: 'https://saru2radio.com',
+			activeListeners: 3
 		});
 		vi.unstubAllGlobals();
 	});

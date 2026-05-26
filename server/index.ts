@@ -14,6 +14,7 @@ import {
 	type IcecastRuntimeConfig
 } from './icecast.js';
 import { LibraryManager, resolveRadioToolPath } from './library.js';
+import { ActiveListenerCounter } from './listener-count.js';
 import { DIST_DIR } from './paths.js';
 import { ListenerMessageStore, ListenerMessageValidationError } from './listener-messages.js';
 import { DirectMp3Playout } from './playout.js';
@@ -50,6 +51,7 @@ const radioToolPath = await resolveExistingPath(resolveRadioToolPath());
 const library = new LibraryManager(radioToolPath);
 const studioState = new StudioStateStore();
 const listenerMessages = new ListenerMessageStore();
+const activeListeners = new ActiveListenerCounter();
 const tunnel = new TunnelManager();
 let source: IcecastSourceConnection;
 let playout: DirectMp3Playout;
@@ -75,6 +77,7 @@ async function main() {
 			};
 		},
 		onStop: () => {
+			activeListeners.reset();
 			status = createStatus();
 			nowPlaying = {
 				trackId: null,
@@ -204,7 +207,7 @@ function createStudioApp() {
 			next(error);
 		}
 	});
-	app.get('/api/monitor/live.mp3', proxyLiveStream);
+	app.get('/api/monitor/live.mp3', (request, response) => proxyLiveStream(request, response));
 
 	app.post('/api/broadcast/start', (request, response, next) => {
 		try {
@@ -241,6 +244,7 @@ function createStudioApp() {
 	app.post('/api/broadcast/stop', (_request, response) => {
 		playout.stop();
 		source.disconnect();
+		activeListeners.reset();
 		status = createStatus();
 		nowPlaying = {
 			trackId: null,
@@ -305,12 +309,16 @@ function createPublicApp() {
 			}
 		}
 	);
-	app.get('/live.mp3', proxyLiveStream);
+	app.get('/live.mp3', (request, response) => proxyLiveStream(request, response, { countActiveListener: true }));
 	app.use((_request, response) => response.status(404).type('text/plain').send('Not found'));
 	return app;
 }
 
-function proxyLiveStream(request: express.Request, response: express.Response) {
+function proxyLiveStream(
+	request: express.Request,
+	response: express.Response,
+	options: { countActiveListener?: boolean } = {}
+) {
 	if (!status.onAir) {
 		response.status(503).type('text/plain').send('saru2radio is off air.');
 		return;
@@ -318,6 +326,11 @@ function proxyLiveStream(request: express.Request, response: express.Response) {
 
 	request.socket.setNoDelay(true);
 	response.socket?.setNoDelay(true);
+	let releaseActiveListener: (() => void) | null = null;
+	const releaseOnce = () => {
+		releaseActiveListener?.();
+		releaseActiveListener = null;
+	};
 	const upstream = http.get(
 		{
 			host: runtime.host,
@@ -330,6 +343,15 @@ function proxyLiveStream(request: express.Request, response: express.Response) {
 				response.status(503).type('text/plain').send('Stream source is not connected.');
 				upstreamResponse.resume();
 				return;
+			}
+			if (options.countActiveListener) {
+				releaseActiveListener = activeListeners.register();
+				response.on('close', releaseOnce);
+				response.on('error', releaseOnce);
+				response.on('finish', releaseOnce);
+				upstreamResponse.on('close', releaseOnce);
+				upstreamResponse.on('end', releaseOnce);
+				upstreamResponse.on('error', releaseOnce);
 			}
 			response.writeHead(200, {
 				'content-type': 'audio/mpeg',
@@ -345,11 +367,15 @@ function proxyLiveStream(request: express.Request, response: express.Response) {
 		socket.setNoDelay(true);
 	});
 	upstream.on('error', () => {
+		releaseOnce();
 		if (!response.headersSent) {
 			response.status(502).type('text/plain').send('Could not reach Icecast.');
 		}
 	});
-	request.on('close', () => upstream.destroy());
+	request.on('close', () => {
+		releaseOnce();
+		upstream.destroy();
+	});
 }
 
 function attachStudioSockets(server: ReturnType<typeof createServer>) {
@@ -466,7 +492,8 @@ function createStatus(): BroadcastStatus {
 		icecastUrl: `http://${runtime.host}:${runtime.port}${runtime.mount}`,
 		listenerUrl: listenerBaseUrl(),
 		tunnelUrl: tunnel.getState().url,
-		sourceConnected: false
+		sourceConnected: false,
+		activeListeners: activeListeners.count
 	};
 }
 
@@ -474,7 +501,8 @@ function currentStatus(): BroadcastStatus {
 	return {
 		...status,
 		tunnelUrl: tunnel.getState().url,
-		sourceConnected: source?.isConnected() ?? status.sourceConnected
+		sourceConnected: source?.isConnected() ?? status.sourceConnected,
+		activeListeners: activeListeners.count
 	};
 }
 
@@ -517,6 +545,7 @@ async function restoreBroadcastLibrary(): Promise<void> {
 
 function markOffAir(): void {
 	source?.disconnect();
+	activeListeners.reset();
 	status = createStatus();
 	nowPlaying = {
 		trackId: null,

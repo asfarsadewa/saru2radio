@@ -7,6 +7,7 @@ export type BroadcastStatus = {
 	listenerUrl: string;
 	tunnelUrl: string | null;
 	sourceConnected: boolean;
+	activeListeners: number;
 };
 
 export type NowPlaying = {

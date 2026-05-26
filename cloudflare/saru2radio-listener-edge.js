@@ -81,7 +81,8 @@ export function offlineResponse(url) {
 			icecastUrl: '',
 			listenerUrl: PUBLIC_ORIGIN,
 			tunnelUrl: null,
-			sourceConnected: false
+			sourceConnected: false,
+			activeListeners: 0
 		});
 	}
 

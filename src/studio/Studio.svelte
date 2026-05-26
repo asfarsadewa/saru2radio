@@ -92,6 +92,8 @@
 	$: missingCount = library.tracks.filter((track) => !track.cacheReady).length;
 	$: onAir = Boolean(status?.onAir);
 	$: sourceConnected = Boolean(status?.sourceConnected);
+	$: activeListeners = status?.activeListeners ?? 0;
+	$: activeListenerLabel = `${activeListeners} ${activeListeners === 1 ? 'LISTENER' : 'LISTENERS'}`;
 	$: listenerUrl = tunnel.url ?? config?.listenerUrl ?? '';
 	$: levelStyle = `--level: ${outputLevel.toFixed(3)};`;
 	$: micOpen = micHeld || micLatched;
@@ -656,6 +658,10 @@
 			<span class="status-pill">
 				<span class:ready={sourceConnected} class:offline={!sourceConnected} class="status-dot"></span>
 				ICECAST
+			</span>
+			<span class="status-pill">
+				<span class:ready={activeListeners > 0} class:offline={activeListeners === 0} class="status-dot"></span>
+				{activeListenerLabel}
 			</span>
 			<span class="status-pill">{config?.bitrateKbps ?? 64} KBPS / 22.05 KHZ</span>
 		</div>
