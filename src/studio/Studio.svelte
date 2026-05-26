@@ -79,6 +79,7 @@
 	let directProgram: DirectProgramMode = 'songs';
 	let activeBroadcastMode: BroadcastMode | null = null;
 	let activeDirectProgram: DirectProgramMode | null = null;
+	let directProgramSwitching = false;
 	let ambientBedEnabled = true;
 	let ambientBedLevel = 0.28;
 	let micLatched = false;
@@ -112,8 +113,9 @@
 	$: voiceProgramSelected = directModeSelected && directProgram === 'voice';
 	$: voiceProgramOnAir = directOnAir && activeDirectProgram === 'voice';
 	$: directSongsOnAir = directOnAir && activeDirectProgram !== 'voice';
+	$: directProgramControlDisabled = directProgramSwitching || mixerOnAir || (!directModeSelected && !directOnAir);
 	$: ambientBedLabel = `Bed ${Math.round(ambientBedLevel * 100)}%`;
-	$: micButtonDisabled = !onAir || !micReady || micMuted;
+	$: micButtonDisabled = directProgramSwitching || !onAir || !micReady || micMuted;
 	$: micButtonLabel = !micReady || micMuted
 		? 'No mic'
 		: voiceProgramOnAir
@@ -288,6 +290,7 @@
 				status = await startBroadcast(queue.map((track) => track.id));
 				activeBroadcastMode = 'direct';
 				activeDirectProgram = 'songs';
+				directProgram = 'songs';
 				outputLevel = 0.05;
 				await syncDirectMonitor({ restart: true });
 			} else {
@@ -326,6 +329,7 @@
 			status = await getStatus();
 			activeBroadcastMode = 'direct';
 			activeDirectProgram = 'voice';
+			directProgram = 'voice';
 			outputLevel = 0.08;
 			nowPlaying = {
 				trackId: null,
@@ -361,7 +365,142 @@
 		}
 	}
 
+	async function switchDirectSongsToVoice() {
+		if (directProgramSwitching || voiceProgramOnAir) {
+			return;
+		}
+
+		directProgramSwitching = true;
+		errorMessage = '';
+		busyMessage = 'Switching to voice program';
+		stopDirectMonitor();
+		await engine.stop();
+		micLatched = false;
+		micHeld = false;
+		micReady = false;
+		micLevel = 0;
+		try {
+			await engine.startVoiceProgram(getEngineOptions(), getEngineCallbacks());
+			await refreshMicrophones();
+			status = await getStatus();
+			activeBroadcastMode = 'direct';
+			activeDirectProgram = 'voice';
+			directProgram = 'voice';
+			outputLevel = 0.08;
+			nowPlaying = {
+				trackId: null,
+				title: 'Live voice',
+				artist: config?.stationName ?? 'saru2radio',
+				startedAt: new Date().toISOString(),
+				duration: null
+			};
+			try {
+				nowPlaying = await updateNowPlaying({
+					trackId: null,
+					title: 'Live voice',
+					artist: config?.stationName ?? 'saru2radio',
+					duration: null
+				});
+			} catch {
+				// The stream can keep running if metadata refresh races the source socket.
+			}
+			await syncDirectMonitor({ restart: true });
+		} catch (error) {
+			stopDirectMonitor();
+			await engine.stop();
+			activeBroadcastMode = 'direct';
+			activeDirectProgram = 'songs';
+			directProgram = 'songs';
+			try {
+				await engine.startTalkBreak(getEngineOptions(), getEngineCallbacks());
+				await refreshMicrophones();
+			} catch {
+				// Keep the original voice-switch error visible; songs are still on air.
+			}
+			try {
+				[status, nowPlaying] = await Promise.all([getStatus(), getNowPlaying()]);
+				await syncDirectMonitor({ restart: true });
+			} catch {
+				// Preserve the visible songs mode if status refresh fails.
+			}
+			setError(error);
+		} finally {
+			busyMessage = '';
+			directProgramSwitching = false;
+		}
+	}
+
+	async function switchDirectVoiceToSongs() {
+		if (directProgramSwitching || directSongsOnAir) {
+			return;
+		}
+
+		directProgramSwitching = true;
+		errorMessage = '';
+		busyMessage = 'Checking song queue';
+		try {
+			library = await getLibrary();
+			reconcileDisplayedQueue();
+		} catch (error) {
+			setError(error);
+			busyMessage = '';
+			directProgramSwitching = false;
+			return;
+		}
+		if (queue.length === 0) {
+			errorMessage = 'Prepare at least one radio copy before switching to Songs.';
+			busyMessage = '';
+			directProgramSwitching = false;
+			return;
+		}
+
+		try {
+			busyMessage = 'Starting direct songs';
+			status = await startBroadcast(queue.map((track) => track.id));
+		} catch (error) {
+			try {
+				status = await getStatus();
+			} catch {
+				// Keep the current voice UI if the status refresh fails.
+			}
+			activeBroadcastMode = 'direct';
+			activeDirectProgram = 'voice';
+			directProgram = 'voice';
+			setError(error);
+			busyMessage = '';
+			directProgramSwitching = false;
+			return;
+		}
+
+		activeBroadcastMode = 'direct';
+		activeDirectProgram = 'songs';
+		directProgram = 'songs';
+		micLatched = false;
+		micHeld = false;
+		micReady = false;
+		micLevel = 0;
+		busyMessage = 'Starting talk break mic';
+		try {
+			await engine.stop();
+			await engine.startTalkBreak(getEngineOptions(), getEngineCallbacks());
+			await refreshMicrophones();
+		} catch (error) {
+			await engine.stop();
+			setError(error);
+		}
+		try {
+			nowPlaying = await getNowPlaying();
+		} catch {
+			// The server playout already owns now-playing; the next poll will refresh it.
+		}
+		outputLevel = 0.05;
+		await syncDirectMonitor({ restart: true });
+		busyMessage = '';
+		directProgramSwitching = false;
+	}
+
 	async function goOffAir() {
+		directProgramSwitching = false;
 		stopDirectMonitor();
 		await engine.stop();
 		micLatched = false;
@@ -435,12 +574,38 @@
 		void applyMicState();
 	}
 
-	function setDirectProgram(mode: DirectProgramMode) {
-		if (onAir) {
+	async function setDirectProgram(mode: DirectProgramMode) {
+		if (directProgramSwitching) {
 			return;
 		}
-		directProgram = mode;
-		closeMicControl();
+		if (!onAir) {
+			directProgram = mode;
+			closeMicControl();
+			return;
+		}
+		if (!directOnAir) {
+			return;
+		}
+		if (mode === 'voice') {
+			await switchDirectSongsToVoice();
+			return;
+		}
+		await switchDirectVoiceToSongs();
+	}
+
+	function chooseDirectProgram(mode: DirectProgramMode) {
+		void setDirectProgram(mode);
+	}
+
+	function isDirectProgramButtonDisabled(): boolean {
+		return directProgramControlDisabled;
+	}
+
+	function visibleDirectProgram(): DirectProgramMode {
+		if (directOnAir && activeDirectProgram) {
+			return activeDirectProgram;
+		}
+		return directProgram;
 	}
 
 	function applyAudioOptions() {
@@ -855,7 +1020,7 @@
 						class:error={Boolean(track.error)}
 						class="track-row"
 						type="button"
-						disabled={!track.cacheReady || voiceProgramOnAir}
+						disabled={!track.cacheReady || voiceProgramOnAir || directProgramSwitching}
 						on:click={() => playTrack(track)}
 					>
 						<div>
@@ -894,7 +1059,7 @@
 			</div>
 
 			<div class="transport panel">
-				<button class:live={onAir} class="broadcast-button" type="button" on:click={onAir ? goOffAir : goOnAir}>
+				<button class:live={onAir} class="broadcast-button" type="button" disabled={directProgramSwitching} on:click={onAir ? goOffAir : goOnAir}>
 					{#if onAir}
 						<StopCircle />
 						OFF AIR
@@ -903,10 +1068,10 @@
 						ON AIR
 					{/if}
 				</button>
-				<button class="icon-button" type="button" disabled={!onAir || voiceProgramOnAir} aria-label="Skip track" on:click={skipTrack}>
+				<button class="icon-button" type="button" disabled={!onAir || voiceProgramOnAir || directProgramSwitching} aria-label="Skip track" on:click={skipTrack}>
 					<SkipForward />
 				</button>
-				<button class="tool-button" type="button" disabled={voiceProgramSelected || voiceProgramOnAir} on:click={toggleOrderMode}>
+				<button class="tool-button" type="button" disabled={voiceProgramSelected || voiceProgramOnAir || directProgramSwitching} on:click={toggleOrderMode}>
 					<Shuffle />
 					{ordered ? 'Ordered' : 'Shuffle'}
 				</button>
@@ -916,8 +1081,22 @@
 				</select>
 				{#if directModeSelected || directOnAir}
 					<div class="direct-program-toggle" aria-label="Direct program">
-						<button class:active={directProgram === 'songs'} type="button" disabled={onAir} on:click={() => setDirectProgram('songs')}>Songs</button>
-						<button class:active={directProgram === 'voice'} type="button" disabled={onAir} on:click={() => setDirectProgram('voice')}>Voice</button>
+						<button
+							class:active={visibleDirectProgram() === 'songs'}
+							type="button"
+							disabled={isDirectProgramButtonDisabled()}
+							on:click={() => chooseDirectProgram('songs')}
+						>
+							Songs
+						</button>
+						<button
+							class:active={visibleDirectProgram() === 'voice'}
+							type="button"
+							disabled={isDirectProgramButtonDisabled()}
+							on:click={() => chooseDirectProgram('voice')}
+						>
+							Voice
+						</button>
 					</div>
 				{/if}
 			</div>

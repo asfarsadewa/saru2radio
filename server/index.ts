@@ -26,6 +26,7 @@ import {
 	listenerRequestKey,
 	rejectForbiddenUpgrade
 } from './security.js';
+import { BrowserSourceSessionGuard } from './source-session.js';
 import { SourceStreamPacer } from './source-pacer.js';
 import { StudioStateStore } from './studio-state.js';
 import { hasCloudflared, TunnelManager } from './tunnel.js';
@@ -52,6 +53,7 @@ const library = new LibraryManager(radioToolPath);
 const studioState = new StudioStateStore();
 const listenerMessages = new ListenerMessageStore();
 const activeListeners = new ActiveListenerCounter();
+const browserSourceSessions = new BrowserSourceSessionGuard();
 const tunnel = new TunnelManager();
 let source: IcecastSourceConnection;
 let playout: DirectMp3Playout;
@@ -213,6 +215,7 @@ function createStudioApp() {
 		try {
 			const queue = resolveBroadcastQueue(request.body?.trackIds);
 			playout.start(queue);
+			browserSourceSessions.invalidate();
 			status = {
 				...status,
 				onAir: true,
@@ -227,6 +230,7 @@ function createStudioApp() {
 		try {
 			const queue = resolveBroadcastQueue(request.body?.trackIds);
 			playout.playNow(queue);
+			browserSourceSessions.invalidate();
 			status = {
 				...status,
 				onAir: true,
@@ -251,6 +255,7 @@ function createStudioApp() {
 		response.json(currentStatus());
 	});
 	app.post('/api/broadcast/stop', (_request, response) => {
+		browserSourceSessions.invalidate();
 		playout.stop();
 		source.disconnect();
 		activeListeners.reset();
@@ -415,19 +420,33 @@ function attachStudioSockets(server: ReturnType<typeof createServer>) {
 function attachSourceSocket(socketServer: WebSocketServer) {
 	socketServer.on('connection', (socket) => {
 		let pacer: SourceStreamPacer | null = null;
+		let sessionId = 0;
 		const stopLiveSource = () => {
 			pacer?.stop();
 			pacer = null;
-			markOffAir();
+			if (browserSourceSessions.endIfActive(sessionId)) {
+				markOffAir();
+			}
+			sessionId = 0;
 		};
 		socket.on('message', (data, isBinary) => {
 			if (!isBinary) {
 				const message = JSON.parse(data.toString()) as { type?: string; bitrateKbps?: number };
 				if (message.type === 'start') {
+					sessionId = browserSourceSessions.begin();
 					playout.stop(false);
 					source.connect();
 					pacer?.stop();
-					pacer = new SourceStreamPacer(source, message.bitrateKbps ?? BITRATE_KBPS);
+					pacer = new SourceStreamPacer(
+						{
+							write(chunk: Buffer) {
+								if (browserSourceSessions.isActive(sessionId)) {
+									source.write(chunk);
+								}
+							}
+						},
+						message.bitrateKbps ?? BITRATE_KBPS
+					);
 					status = {
 						...status,
 						onAir: true,
@@ -440,6 +459,9 @@ function attachSourceSocket(socketServer: WebSocketServer) {
 			}
 
 			const chunk = Buffer.isBuffer(data) ? data : Buffer.from(data as ArrayBuffer);
+			if (!browserSourceSessions.isActive(sessionId)) {
+				return;
+			}
 			if (pacer) {
 				pacer.push(chunk);
 			} else {
