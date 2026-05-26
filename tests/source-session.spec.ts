@@ -24,8 +24,10 @@ describe('BrowserSourceSessionGuard', () => {
 		const guard = new BrowserSourceSessionGuard();
 		const voiceSession = guard.begin();
 
+		expect(guard.hasActive()).toBe(true);
 		guard.invalidate();
 
+		expect(guard.hasActive()).toBe(false);
 		expect(guard.endIfActive(voiceSession)).toBe(false);
 	});
 });

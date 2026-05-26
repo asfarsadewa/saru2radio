@@ -79,6 +79,7 @@
 	let directProgram: DirectProgramMode = 'songs';
 	let activeBroadcastMode: BroadcastMode | null = null;
 	let activeDirectProgram: DirectProgramMode | null = null;
+	let inferredActiveDirectProgram: DirectProgramMode | null = null;
 	let directProgramSwitching = false;
 	let ambientBedEnabled = true;
 	let ambientBedLevel = 0.28;
@@ -107,12 +108,13 @@
 	$: levelStyle = `--level: ${outputLevel.toFixed(3)};`;
 	$: micOpen = micHeld || micLatched;
 	$: micLevelStyle = `--mic-level: ${micLevel.toFixed(3)};`;
-	$: mixerOnAir = activeBroadcastMode === 'mixer';
-	$: directOnAir = activeBroadcastMode === 'direct';
 	$: directModeSelected = broadcastMode === 'direct';
+	$: mixerOnAir = activeBroadcastMode === 'mixer';
+	$: directOnAir = activeBroadcastMode === 'direct' || (onAir && directModeSelected && activeBroadcastMode !== 'mixer');
+	$: inferredActiveDirectProgram = directOnAir ? (activeDirectProgram ?? inferDirectProgramFromNowPlaying()) : null;
 	$: voiceProgramSelected = directModeSelected && directProgram === 'voice';
-	$: voiceProgramOnAir = directOnAir && activeDirectProgram === 'voice';
-	$: directSongsOnAir = directOnAir && activeDirectProgram !== 'voice';
+	$: voiceProgramOnAir = directOnAir && inferredActiveDirectProgram === 'voice';
+	$: directSongsOnAir = directOnAir && inferredActiveDirectProgram !== 'voice';
 	$: directProgramControlDisabled = directProgramSwitching || mixerOnAir || (!directModeSelected && !directOnAir);
 	$: ambientBedLabel = `Bed ${Math.round(ambientBedLevel * 100)}%`;
 	$: micButtonDisabled = directProgramSwitching || !onAir || !micReady || micMuted;
@@ -602,10 +604,14 @@
 	}
 
 	function visibleDirectProgram(): DirectProgramMode {
-		if (directOnAir && activeDirectProgram) {
-			return activeDirectProgram;
+		if (directOnAir && inferredActiveDirectProgram) {
+			return inferredActiveDirectProgram;
 		}
 		return directProgram;
+	}
+
+	function inferDirectProgramFromNowPlaying(): DirectProgramMode {
+		return nowPlaying?.trackId === null && nowPlaying.title === 'Live voice' ? 'voice' : 'songs';
 	}
 
 	function applyAudioOptions() {
@@ -1554,7 +1560,27 @@
 	}
 
 	.transport {
+		--transport-control-height: 58px;
+		align-items: stretch;
 		flex-wrap: wrap;
+	}
+
+	.transport .broadcast-button,
+	.transport .icon-button,
+	.transport .tool-button,
+	.transport .mode-select,
+	.transport .direct-program-toggle {
+		height: var(--transport-control-height);
+		min-height: var(--transport-control-height);
+	}
+
+	.transport .icon-button {
+		width: var(--transport-control-height);
+	}
+
+	.transport .tool-button,
+	.transport .mode-select {
+		line-height: 1;
 	}
 
 	.broadcast-button {
@@ -1562,7 +1588,6 @@
 		align-items: center;
 		justify-content: center;
 		gap: 10px;
-		min-height: 58px;
 		flex: 1;
 		border-radius: 4px;
 		background: var(--ink);
@@ -1584,7 +1609,6 @@
 
 	.mode-select {
 		flex: 0 0 138px;
-		min-height: 58px;
 		font-size: 11px;
 		font-weight: 800;
 		letter-spacing: 0.08em;
@@ -1595,7 +1619,6 @@
 		display: grid;
 		grid-template-columns: repeat(2, minmax(0, 1fr));
 		flex: 0 1 132px;
-		min-height: 58px;
 		overflow: hidden;
 		border: 1px solid var(--line);
 		border-radius: 4px;
@@ -1603,6 +1626,9 @@
 	}
 
 	.direct-program-toggle button {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
 		min-width: 0;
 		padding: 0 8px;
 		border: 0;

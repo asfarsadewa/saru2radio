@@ -16,6 +16,10 @@ export class BrowserSourceSessionGuard {
 		return id !== 0 && this.activeId === id;
 	}
 
+	hasActive(): boolean {
+		return this.activeId !== 0;
+	}
+
 	endIfActive(id: number): boolean {
 		if (!this.isActive(id)) {
 			return false;

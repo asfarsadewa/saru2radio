@@ -37,6 +37,7 @@ const PUBLIC_PORT = Number(process.env.PUBLIC_PORT ?? 8012);
 const BITRATE_KBPS = Number(process.env.RADIO_BITRATE_KBPS ?? 128);
 const LISTENER_REQUEST_LIMIT = Number(process.env.LISTENER_REQUEST_LIMIT ?? 6);
 const LISTENER_REQUEST_WINDOW_MS = Number(process.env.LISTENER_REQUEST_WINDOW_MS ?? 60_000);
+const SOURCE_RECONNECT_DELAY_MS = 500;
 
 let runtime: IcecastRuntimeConfig;
 let status: BroadcastStatus;
@@ -211,11 +212,10 @@ function createStudioApp() {
 	});
 	app.get('/api/monitor/live.mp3', (request, response) => proxyLiveStream(request, response));
 
-	app.post('/api/broadcast/start', (request, response, next) => {
+	app.post('/api/broadcast/start', async (request, response, next) => {
 		try {
 			const queue = resolveBroadcastQueue(request.body?.trackIds);
-			playout.start(queue);
-			browserSourceSessions.invalidate();
+			await startDirectPlayout(queue);
 			status = {
 				...status,
 				onAir: true,
@@ -226,11 +226,10 @@ function createStudioApp() {
 			next(error);
 		}
 	});
-	app.post('/api/broadcast/play-now', (request, response, next) => {
+	app.post('/api/broadcast/play-now', async (request, response, next) => {
 		try {
 			const queue = resolveBroadcastQueue(request.body?.trackIds);
-			playout.playNow(queue);
-			browserSourceSessions.invalidate();
+			await startDirectPlayout(queue, { playNow: true });
 			status = {
 				...status,
 				onAir: true,
@@ -421,7 +420,12 @@ function attachSourceSocket(socketServer: WebSocketServer) {
 	socketServer.on('connection', (socket) => {
 		let pacer: SourceStreamPacer | null = null;
 		let sessionId = 0;
+		let connectTimer: ReturnType<typeof setTimeout> | null = null;
 		const stopLiveSource = () => {
+			if (connectTimer) {
+				clearTimeout(connectTimer);
+				connectTimer = null;
+			}
 			pacer?.stop();
 			pacer = null;
 			if (browserSourceSessions.endIfActive(sessionId)) {
@@ -433,9 +437,21 @@ function attachSourceSocket(socketServer: WebSocketServer) {
 			if (!isBinary) {
 				const message = JSON.parse(data.toString()) as { type?: string; bitrateKbps?: number };
 				if (message.type === 'start') {
+					const wasPlayoutRunning = playout.isRunning();
 					sessionId = browserSourceSessions.begin();
-					playout.stop(false);
-					source.connect();
+					playout.stop();
+					if (connectTimer) {
+						clearTimeout(connectTimer);
+					}
+					connectTimer = setTimeout(
+						() => {
+							connectTimer = null;
+							if (browserSourceSessions.isActive(sessionId)) {
+								source.connect();
+							}
+						},
+						wasPlayoutRunning ? SOURCE_RECONNECT_DELAY_MS : 0
+					);
 					pacer?.stop();
 					pacer = new SourceStreamPacer(
 						{
@@ -514,6 +530,31 @@ function attachTalkBreakSocket(socketServer: WebSocketServer) {
 	});
 }
 
+async function startDirectPlayout(queue: Track[], options: { playNow?: boolean } = {}): Promise<void> {
+	const replacingBrowserSource = browserSourceSessions.hasActive();
+	if (replacingBrowserSource) {
+		browserSourceSessions.invalidate();
+		source.disconnect();
+		await wait(SOURCE_RECONNECT_DELAY_MS);
+	}
+
+	try {
+		if (options.playNow) {
+			playout.playNow(queue);
+		} else {
+			playout.start(queue);
+		}
+		if (!replacingBrowserSource) {
+			browserSourceSessions.invalidate();
+		}
+	} catch (error) {
+		if (replacingBrowserSource) {
+			markOffAir();
+		}
+		throw error;
+	}
+}
+
 function createStatus(): BroadcastStatus {
 	return {
 		onAir: false,
@@ -572,6 +613,10 @@ async function restoreBroadcastLibrary(): Promise<void> {
 	} catch (error) {
 		console.warn(`[library] could not restore ${saved.broadcastDirectory}: ${error instanceof Error ? error.message : error}`);
 	}
+}
+
+function wait(ms: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function markOffAir(): void {

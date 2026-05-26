@@ -109,6 +109,7 @@ export async function isIcecastReachable(runtime: IcecastRuntimeConfig): Promise
 export class IcecastSourceConnection {
 	private request: http.ClientRequest | null = null;
 	private connected = false;
+	private token = 0;
 
 	constructor(
 		private readonly runtime: IcecastRuntimeConfig,
@@ -117,9 +118,15 @@ export class IcecastSourceConnection {
 	) {}
 
 	connect(): void {
-		this.disconnect();
+		const previousRequest = this.request;
+		if (previousRequest) {
+			previousRequest.end();
+			previousRequest.destroy();
+		}
+
+		const token = (this.token += 1);
 		const authorization = Buffer.from(`source:${this.runtime.sourcePassword}`).toString('base64');
-		this.request = http.request({
+		const request = http.request({
 			host: this.runtime.host,
 			port: this.runtime.port,
 			method: 'PUT',
@@ -132,28 +139,22 @@ export class IcecastSourceConnection {
 				'Ice-Public': '0'
 			}
 		});
+		this.request = request;
 
-		this.request.on('socket', (socket) => {
+		request.on('socket', (socket) => {
 			socket.setNoDelay(true);
 		});
-		this.request.on('response', (response) => {
+		request.on('response', (response) => {
 			if ((response.statusCode ?? 500) >= 300) {
-				this.connected = false;
-				this.onState(false);
+				this.clearCurrentRequest(request, token);
+				request.destroy();
 			}
 			response.resume();
 		});
-		this.request.on('error', () => {
-			this.connected = false;
-			this.onState(false);
-		});
-		this.request.on('close', () => {
-			this.connected = false;
-			this.onState(false);
-		});
-		this.request.flushHeaders();
-		this.connected = true;
-		this.onState(true);
+		request.on('error', () => this.clearCurrentRequest(request, token));
+		request.on('close', () => this.clearCurrentRequest(request, token));
+		request.flushHeaders();
+		this.setConnected(true);
 	}
 
 	write(chunk: Buffer): void {
@@ -164,17 +165,34 @@ export class IcecastSourceConnection {
 	}
 
 	disconnect(): void {
-		if (this.request) {
-			this.request.end();
-			this.request.destroy();
-		}
+		const request = this.request;
+		this.token += 1;
 		this.request = null;
-		this.connected = false;
-		this.onState(false);
+		if (request) {
+			request.end();
+			request.destroy();
+		}
+		this.setConnected(false);
 	}
 
 	isConnected(): boolean {
 		return this.connected;
+	}
+
+	private clearCurrentRequest(request: http.ClientRequest, token: number): void {
+		if (this.request !== request || this.token !== token) {
+			return;
+		}
+		this.request = null;
+		this.setConnected(false);
+	}
+
+	private setConnected(connected: boolean): void {
+		if (this.connected === connected) {
+			return;
+		}
+		this.connected = connected;
+		this.onState(connected);
 	}
 }
 
