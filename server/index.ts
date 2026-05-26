@@ -418,7 +418,6 @@ function attachStudioSockets(server: ReturnType<typeof createServer>) {
 
 function attachSourceSocket(socketServer: WebSocketServer) {
 	socketServer.on('connection', (socket) => {
-		let pacer: SourceStreamPacer | null = null;
 		let sessionId = 0;
 		let connectTimer: ReturnType<typeof setTimeout> | null = null;
 		const stopLiveSource = () => {
@@ -426,8 +425,6 @@ function attachSourceSocket(socketServer: WebSocketServer) {
 				clearTimeout(connectTimer);
 				connectTimer = null;
 			}
-			pacer?.stop();
-			pacer = null;
 			if (browserSourceSessions.endIfActive(sessionId)) {
 				markOffAir();
 			}
@@ -452,17 +449,6 @@ function attachSourceSocket(socketServer: WebSocketServer) {
 						},
 						wasPlayoutRunning ? SOURCE_RECONNECT_DELAY_MS : 0
 					);
-					pacer?.stop();
-					pacer = new SourceStreamPacer(
-						{
-							write(chunk: Buffer) {
-								if (browserSourceSessions.isActive(sessionId)) {
-									source.write(chunk);
-								}
-							}
-						},
-						message.bitrateKbps ?? BITRATE_KBPS
-					);
 					status = {
 						...status,
 						onAir: true,
@@ -478,11 +464,7 @@ function attachSourceSocket(socketServer: WebSocketServer) {
 			if (!browserSourceSessions.isActive(sessionId)) {
 				return;
 			}
-			if (pacer) {
-				pacer.push(chunk);
-			} else {
-				source.write(chunk);
-			}
+			source.write(chunk);
 		});
 		socket.on('close', stopLiveSource);
 		socket.on('error', stopLiveSource);
