@@ -1,4 +1,4 @@
-import type { BroadcastStatus, LibraryState, ListenerMessage, NowPlaying, ServerConfig, StudioState, TunnelState } from './types';
+import type { AiDjAction, BroadcastStatus, LibraryState, ListenerMessage, NowPlaying, ServerConfig, StudioState, TunnelState } from './types';
 
 async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
 	const response = await fetch(path, {
@@ -113,6 +113,14 @@ export function deleteListenerMessage(id: string): Promise<ListenerMessage[]> {
 
 export function clearListenerMessages(): Promise<ListenerMessage[]> {
 	return requestJson<ListenerMessage[]>('/api/listener-messages', { method: 'DELETE' });
+}
+
+export function getAiDjActions(): Promise<AiDjAction[]> {
+	return requestJson<AiDjAction[]>('/api/ai-dj/actions');
+}
+
+export function clearAiDjActions(): Promise<AiDjAction[]> {
+	return requestJson<AiDjAction[]>('/api/ai-dj/actions', { method: 'DELETE' });
 }
 
 export function startTunnel(): Promise<TunnelState> {

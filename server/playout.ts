@@ -104,6 +104,10 @@ export class DirectMp3Playout {
 		return this.running;
 	}
 
+	getQueue(): Track[] {
+		return [...this.queue];
+	}
+
 	pause(): void {
 		if (!this.running || this.paused) {
 			return;

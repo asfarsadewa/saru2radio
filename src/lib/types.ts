@@ -25,6 +25,36 @@ export type ListenerMessage = {
 	receivedAt: string;
 };
 
+export type AiDjDecision = 'play' | 'not_song_request' | 'song_unavailable' | 'ambiguous' | 'unsafe_ignore';
+
+export type AiDjActionStatus =
+	| 'analyzing'
+	| 'played_now'
+	| 'ignored_not_song'
+	| 'ignored_unavailable'
+	| 'ignored_ambiguous'
+	| 'ignored_unsafe'
+	| 'log_only_mode'
+	| 'disabled'
+	| 'failed';
+
+export type AiDjAction = {
+	id: string;
+	requestId: string;
+	listenerName: string;
+	requestMessage: string;
+	receivedAt: string;
+	updatedAt: string;
+	status: AiDjActionStatus;
+	decision?: AiDjDecision;
+	confidence?: number;
+	matchedTrackId?: string;
+	matchedTrackTitle?: string;
+	matchedTrackArtist?: string;
+	reason: string;
+	model: string;
+};
+
 export type Track = {
 	id: string;
 	sourcePath: string;
@@ -67,6 +97,15 @@ export type ServerConfig = {
 	bitrateKbps: number;
 	radioToolPath: string | null;
 	cloudflaredAvailable: boolean;
+	aiDj: AiDjConfig;
+};
+
+export type AiDjConfig = {
+	enabled: boolean;
+	configured: boolean;
+	model: string;
+	minConfidence: number;
+	status: 'ready' | 'missing-key' | 'disabled';
 };
 
 export type TunnelState = {

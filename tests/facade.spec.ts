@@ -3,7 +3,7 @@ import { test, expect } from '@playwright/test';
 const STUDIO_URL = `http://127.0.0.1:${process.env.STUDIO_PORT ?? 8011}`;
 const PUBLIC_URL = `http://127.0.0.1:${process.env.PUBLIC_PORT ?? 8012}`;
 
-test('studio dashboard renders local booth controls', async ({ page }) => {
+test('studio dashboard renders local booth controls', async ({ page, request }) => {
 	await page.goto(`${STUDIO_URL}/`);
 	await expect(page.getByRole('heading', { name: 'saru2radio' })).toBeVisible();
 	await expect(page.getByRole('button', { name: /(ON|OFF) AIR/i })).toBeVisible();
@@ -13,7 +13,14 @@ test('studio dashboard renders local booth controls', async ({ page }) => {
 	await page.getByRole('button', { name: 'Voice' }).click();
 	await expect(page.getByText('Ambient bed')).toBeVisible();
 	await expect(page.getByText('listener requests', { exact: true })).toBeVisible();
+	await expect(page.getByText('AI DJ actions', { exact: true })).toBeVisible();
 	await expect(page.getByRole('button', { name: /No mic/i })).toBeDisabled();
+
+	const aiDjActionsResponse = await request.get(`${STUDIO_URL}/api/ai-dj/actions`);
+	expect(aiDjActionsResponse.ok()).toBe(true);
+	expect(Array.isArray(await aiDjActionsResponse.json())).toBe(true);
+	const clearAiDjActionsResponse = await request.delete(`${STUDIO_URL}/api/ai-dj/actions`);
+	expect(clearAiDjActionsResponse.ok()).toBe(true);
 });
 
 test('public facade renders listener page and hides studio API', async ({ page, request }) => {
@@ -25,6 +32,8 @@ test('public facade renders listener page and hides studio API', async ({ page, 
 	expect(apiResponse.status()).toBe(404);
 	const messagesResponse = await request.get(`${PUBLIC_URL}/api/listener-messages`);
 	expect(messagesResponse.status()).toBe(404);
+	const aiDjActionsResponse = await request.get(`${PUBLIC_URL}/api/ai-dj/actions`);
+	expect(aiDjActionsResponse.status()).toBe(404);
 
 	const statusResponse = await request.get(`${PUBLIC_URL}/status.json`);
 	expect(statusResponse.ok()).toBe(true);

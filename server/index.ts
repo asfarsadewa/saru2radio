@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import express from 'express';
 import { createServer } from 'node:http';
 import http from 'node:http';
@@ -30,6 +31,7 @@ import { BrowserSourceSessionGuard } from './source-session.js';
 import { SourceStreamPacer } from './source-pacer.js';
 import { StudioStateStore } from './studio-state.js';
 import { hasCloudflared, TunnelManager } from './tunnel.js';
+import { AiDjActionStore, createAiDjAgent, type AiDjRequestAgent } from './ai-dj.js';
 
 const STATION_NAME = 'saru2radio';
 const STUDIO_PORT = Number(process.env.STUDIO_PORT ?? 8011);
@@ -37,6 +39,9 @@ const PUBLIC_PORT = Number(process.env.PUBLIC_PORT ?? 8012);
 const BITRATE_KBPS = Number(process.env.RADIO_BITRATE_KBPS ?? 128);
 const LISTENER_REQUEST_LIMIT = Number(process.env.LISTENER_REQUEST_LIMIT ?? 6);
 const LISTENER_REQUEST_WINDOW_MS = Number(process.env.LISTENER_REQUEST_WINDOW_MS ?? 60_000);
+const AI_DJ_ENABLED = process.env.AI_DJ_ENABLED?.toLowerCase() !== 'false';
+const AI_DJ_MODEL = process.env.OPENAI_MODEL?.trim() || 'gpt-5.5';
+const AI_DJ_MIN_CONFIDENCE = Number(process.env.AI_DJ_MIN_CONFIDENCE ?? 0.72);
 const SOURCE_RECONNECT_DELAY_MS = 500;
 
 let runtime: IcecastRuntimeConfig;
@@ -53,11 +58,13 @@ const radioToolPath = await resolveExistingPath(resolveRadioToolPath());
 const library = new LibraryManager(radioToolPath);
 const studioState = new StudioStateStore();
 const listenerMessages = new ListenerMessageStore();
+const aiDjActions = new AiDjActionStore();
 const activeListeners = new ActiveListenerCounter();
 const browserSourceSessions = new BrowserSourceSessionGuard();
 const tunnel = new TunnelManager();
 let source: IcecastSourceConnection;
 let playout: DirectMp3Playout;
+let aiDj: AiDjRequestAgent;
 let cloudflaredAvailable = false;
 
 async function main() {
@@ -94,6 +101,16 @@ async function main() {
 			console.error(`[playout] ${message}`);
 		}
 	});
+	aiDj = createAiDjAgent({
+		actions: aiDjActions,
+		apiKey: process.env.OPENAI_API_KEY,
+		model: AI_DJ_MODEL,
+		enabled: AI_DJ_ENABLED,
+		minConfidence: AI_DJ_MIN_CONFIDENCE,
+		getReadyTracks: currentReadyTracks,
+		isDirectSongsActive,
+		playNow: playAiDjTrackNow
+	});
 
 	const studioApp = createStudioApp();
 	const studioServer = createServer(studioApp);
@@ -127,7 +144,8 @@ function createStudioApp() {
 			mount: runtime.mount,
 			bitrateKbps: BITRATE_KBPS,
 			radioToolPath,
-			cloudflaredAvailable
+			cloudflaredAvailable,
+			aiDj: aiDj.config()
 		};
 		response.json(config);
 	});
@@ -139,6 +157,10 @@ function createStudioApp() {
 	});
 	app.delete('/api/listener-messages', (_request, response) => {
 		response.json(listenerMessages.clear());
+	});
+	app.get('/api/ai-dj/actions', (_request, response) => response.json(aiDjActions.list()));
+	app.delete('/api/ai-dj/actions', (_request, response) => {
+		response.json(aiDjActions.clear());
 	});
 	app.get('/api/studio-state', (_request, response) => response.json(studioState.get()));
 	app.patch('/api/studio-state', async (request, response, next) => {
@@ -312,7 +334,13 @@ function createPublicApp() {
 			}
 
 			try {
-				response.status(201).json(listenerMessages.create(request.body ?? {}));
+				const listenerMessage = listenerMessages.create(request.body ?? {});
+				try {
+					aiDj.enqueue(listenerMessage);
+				} catch (error) {
+					console.error(`[ai-dj] ${error instanceof Error ? error.message : error}`);
+				}
+				response.status(201).json(listenerMessage);
 			} catch (error) {
 				if (error instanceof ListenerMessageValidationError) {
 					response.status(400).type('text/plain').send(error.message);
@@ -563,10 +591,37 @@ function currentStatus(): BroadcastStatus {
 function resolveBroadcastQueue(trackIds: unknown): Track[] {
 	const requestedIds = Array.isArray(trackIds) ? trackIds.map(String) : [];
 	if (requestedIds.length === 0) {
-		return library.getState().tracks.filter((track) => track.cacheReady);
+		return currentReadyTracks();
 	}
 
 	return requestedIds.map((id) => library.getTrack(id)).filter((track): track is Track => Boolean(track?.cacheReady));
+}
+
+function currentReadyTracks(): Track[] {
+	return library.getState().tracks.filter((track) => track.cacheReady);
+}
+
+function isDirectSongsActive(): boolean {
+	return Boolean(status?.onAir && playout?.isRunning());
+}
+
+async function playAiDjTrackNow(track: Track): Promise<void> {
+	const queue = cueAiDjTrack(track);
+	await startDirectPlayout(queue, { playNow: true });
+	status = {
+		...status,
+		onAir: true,
+		startedAt: status.startedAt ?? new Date().toISOString()
+	};
+}
+
+function cueAiDjTrack(track: Track): Track[] {
+	const currentQueue = playout
+		.getQueue()
+		.filter((candidate) => candidate.cacheReady && candidate.id !== track.id);
+	const fallbackQueue = currentReadyTracks().filter((candidate) => candidate.id !== track.id);
+	const tail = currentQueue.length > 0 ? currentQueue : fallbackQueue;
+	return [track, ...tail];
 }
 
 function publicStatus(request: express.Request): BroadcastStatus {

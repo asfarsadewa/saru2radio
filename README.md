@@ -205,6 +205,8 @@ The request line is disabled while the station is off air. When on air, listener
 
 Requests are one-way only. They are visible to the DJ in the studio's **Listener requests** panel and are kept only in memory for the current server session.
 
+If `OPENAI_API_KEY` is set, the local studio server also runs an AI DJ request agent. The agent classifies accepted listener messages against the current ready local track list, logs every action in the studio's **AI DJ actions** panel, and only auto-plays a match while Direct songs is already active. The listener facade never receives the OpenAI key and does not expose the action log.
+
 ## Listener Request API
 
 Public listener route:
@@ -231,6 +233,8 @@ Studio-only routes:
 GET    /api/listener-messages
 DELETE /api/listener-messages/:id
 DELETE /api/listener-messages
+GET    /api/ai-dj/actions
+DELETE /api/ai-dj/actions
 ```
 
 The public listener facade intentionally does not expose `/api/*`.
@@ -298,6 +302,10 @@ It also:
 | `RADIO_BITRATE_KBPS` | `128` | Browser encoder/source pacer bitrate target. |
 | `RADIO_SOUND_EXE` | `.tools\make-radio-sound\make-radio-sound.exe` | Retro audio preparation tool path. |
 | `SARU2RADIO_TUNNEL_CONFIG` | `.saru2radio/cloudflare-named-tunnel.json` | Optional named Cloudflare tunnel config. |
+| `OPENAI_API_KEY` | unset | Local OpenAI key for the server-side AI DJ request agent. |
+| `OPENAI_MODEL` | `gpt-5.5` | AI DJ model used for request classification. |
+| `AI_DJ_ENABLED` | `true` | Set to `false` to keep listener requests manual-only. |
+| `AI_DJ_MIN_CONFIDENCE` | `0.72` | Minimum model confidence required before AI DJ auto-plays a matched track. |
 
 Icecast runtime secrets are generated in:
 

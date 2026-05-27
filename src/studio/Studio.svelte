@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onDestroy, onMount } from 'svelte';
 	import {
+		Bot,
 		FolderOpen,
 		ListMusic,
 		MessageSquare,
@@ -16,8 +17,10 @@
 		X
 	} from '@lucide/svelte';
 	import {
+		clearAiDjActions,
 		clearListenerMessages,
 		deleteListenerMessage,
+		getAiDjActions,
 		getConfig,
 		getLibrary,
 		getListenerMessages,
@@ -39,7 +42,7 @@
 	} from '../lib/api';
 	import { StudioEngine, type MicCaptureState, type MicColorMode } from '../lib/audio/studioEngine';
 	import { createPlaybackQueue, cueTrackInQueue, reconcileQueueWithTracks, rotateQueueToTrack } from '../lib/queue';
-	import type { BroadcastStatus, LibraryState, ListenerMessage, NowPlaying, ServerConfig, Track, TunnelState } from '../lib/types';
+	import type { AiDjAction, BroadcastStatus, LibraryState, ListenerMessage, NowPlaying, ServerConfig, Track, TunnelState } from '../lib/types';
 
 	type BroadcastMode = 'direct' | 'mixer';
 	type DirectProgramMode = 'songs' | 'voice';
@@ -60,6 +63,7 @@
 	let queue: Track[] = [];
 	let nowPlaying: NowPlaying | null = null;
 	let listenerMessages: ListenerMessage[] = [];
+	let aiDjActions: AiDjAction[] = [];
 	let ordered = false;
 	let errorMessage = '';
 	let busyMessage = '';
@@ -151,13 +155,14 @@
 
 	async function refreshAll() {
 		try {
-			const [nextConfig, nextLibrary, nextStatus, nextTunnel, nextNowPlaying, nextListenerMessages, studioState] = await Promise.all([
+			const [nextConfig, nextLibrary, nextStatus, nextTunnel, nextNowPlaying, nextListenerMessages, nextAiDjActions, studioState] = await Promise.all([
 				getConfig(),
 				getLibrary(),
 				getStatus(),
 				getTunnel(),
 				getNowPlaying(),
 				getListenerMessages(),
+				getAiDjActions(),
 				getStudioState()
 			]);
 			config = nextConfig;
@@ -166,6 +171,7 @@
 			tunnel = nextTunnel;
 			nowPlaying = nextNowPlaying;
 			listenerMessages = nextListenerMessages;
+			aiDjActions = nextAiDjActions;
 			ordered = studioState.ordered;
 			libraryRecursive = studioState.broadcastRecursive;
 			directoryInput = library.directory || studioState.broadcastDirectory;
@@ -177,11 +183,12 @@
 
 	async function refreshStatusOnly() {
 		try {
-			[status, tunnel, nowPlaying, listenerMessages] = await Promise.all([
+			[status, tunnel, nowPlaying, listenerMessages, aiDjActions] = await Promise.all([
 				getStatus(),
 				getTunnel(),
 				getNowPlaying(),
-				getListenerMessages()
+				getListenerMessages(),
+				getAiDjActions()
 			]);
 		} catch {
 			// Polling should not interrupt the booth.
@@ -935,6 +942,14 @@
 		}
 	}
 
+	async function clearAiDjActionLog() {
+		try {
+			aiDjActions = await clearAiDjActions();
+		} catch (error) {
+			setError(error);
+		}
+	}
+
 	function setError(error: unknown) {
 		errorMessage = error instanceof Error ? error.message : 'Unexpected error.';
 	}
@@ -954,6 +969,42 @@
 			return '';
 		}
 		return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+	}
+
+	function aiDjStatusLabel(action: AiDjAction): string {
+		switch (action.status) {
+			case 'analyzing':
+				return 'Analyzing';
+			case 'played_now':
+				return 'Played now';
+			case 'ignored_not_song':
+				return 'Not a song';
+			case 'ignored_unavailable':
+				return 'Unavailable';
+			case 'ignored_ambiguous':
+				return 'Ambiguous';
+			case 'ignored_unsafe':
+				return 'Unsafe ignored';
+			case 'log_only_mode':
+				return 'Log only';
+			case 'disabled':
+				return 'Disabled';
+			case 'failed':
+				return 'Failed';
+		}
+	}
+
+	function aiDjStatusClass(action: AiDjAction): string {
+		if (action.status === 'played_now') {
+			return 'played';
+		}
+		if (action.status === 'analyzing') {
+			return 'pending';
+		}
+		if (action.status === 'failed' || action.status === 'ignored_unsafe') {
+			return 'warning';
+		}
+		return 'ignored';
 	}
 </script>
 
@@ -1136,23 +1187,68 @@
 					</button>
 				</div>
 
-				<div class="request-inbox">
-					{#each listenerMessages as request (request.id)}
-						<article class="request-card">
+				<div class="request-panel-body">
+					<section class="request-section" aria-label="Listener request inbox">
+						<div class="request-section-head">
+							<span class="eyebrow">inbox</span>
+							<span>{listenerMessages.length}</span>
+						</div>
+						<div class="request-inbox">
+							{#each listenerMessages as request (request.id)}
+								<article class="request-card">
+									<div>
+										<MessageSquare />
+										<strong>{request.name}</strong>
+										<time datetime={request.receivedAt}>{formatRequestTime(request.receivedAt)}</time>
+									</div>
+									<button class="icon-button" type="button" aria-label={`Dismiss request from ${request.name}`} on:click={() => dismissListenerRequest(request.id)}>
+										<X />
+									</button>
+									<p>{request.message}</p>
+								</article>
+							{/each}
+							{#if listenerMessages.length === 0}
+								<p class="empty-note">No listener requests yet.</p>
+							{/if}
+						</div>
+					</section>
+
+					<section class="request-section" aria-label="AI DJ actions">
+						<div class="request-section-head">
 							<div>
-								<MessageSquare />
-								<strong>{request.name}</strong>
-								<time datetime={request.receivedAt}>{formatRequestTime(request.receivedAt)}</time>
+								<span class="eyebrow">AI DJ actions</span>
+								<span>{config?.aiDj.configured ? config.aiDj.model : 'OPENAI_API_KEY missing'}</span>
 							</div>
-							<button class="icon-button" type="button" aria-label={`Dismiss request from ${request.name}`} on:click={() => dismissListenerRequest(request.id)}>
-								<X />
+							<button
+								class="icon-button"
+								type="button"
+								disabled={aiDjActions.length === 0}
+								aria-label="Clear AI DJ actions"
+								on:click={clearAiDjActionLog}
+							>
+								<Trash2 />
 							</button>
-							<p>{request.message}</p>
-						</article>
-					{/each}
-					{#if listenerMessages.length === 0}
-						<p class="empty-note">No listener requests yet.</p>
-					{/if}
+						</div>
+						<div class="ai-action-list">
+							{#each aiDjActions as action (action.id)}
+								<article class="ai-action-card">
+									<div class="ai-action-meta">
+										<Bot />
+										<span class={`ai-status ${aiDjStatusClass(action)}`}>{aiDjStatusLabel(action)}</span>
+										<time datetime={action.updatedAt}>{formatRequestTime(action.updatedAt)}</time>
+									</div>
+									<p class="ai-request"><strong>{action.listenerName}</strong>: {action.requestMessage}</p>
+									{#if action.matchedTrackTitle}
+										<p class="ai-track">{action.matchedTrackTitle} - {action.matchedTrackArtist}</p>
+									{/if}
+									<p>{action.reason}</p>
+								</article>
+							{/each}
+							{#if aiDjActions.length === 0}
+								<p class="empty-note">No AI DJ actions yet.</p>
+							{/if}
+						</div>
+					</section>
 				</div>
 			</div>
 		</section>
@@ -1339,7 +1435,7 @@
 
 	.broadcast-panel {
 		display: grid;
-		grid-template-rows: minmax(300px, 1.1fr) auto auto minmax(112px, 0.42fr);
+		grid-template-rows: minmax(216px, 0.9fr) auto auto minmax(160px, 0.6fr);
 		gap: 12px;
 		overflow: hidden;
 	}
@@ -1662,32 +1758,79 @@
 		display: grid;
 		min-height: 0;
 		grid-template-rows: auto minmax(0, 1fr);
-		gap: 10px;
+		gap: 8px;
 		overflow: hidden;
-		padding: 12px;
+		padding: 10px;
 	}
 
 	.requests-panel .panel-head h2 {
-		font-size: 22px;
+		font-size: 20px;
 	}
 
-	.request-inbox {
+	.request-panel-body,
+	.request-section,
+	.request-inbox,
+	.ai-action-list {
 		display: grid;
+		min-height: 0;
+	}
+
+	.request-panel-body {
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+		gap: 10px;
+	}
+
+	.request-section {
+		grid-template-rows: auto minmax(0, 1fr);
+		gap: 6px;
+		overflow: hidden;
+	}
+
+	.request-section-head {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 8px;
+		color: var(--ink-faint);
+		font-size: 10px;
+		font-weight: 700;
+		text-transform: uppercase;
+	}
+
+	.request-section-head > div {
+		display: flex;
+		min-width: 0;
+		align-items: center;
+		gap: 8px;
+	}
+
+	.request-section-head span:not(.eyebrow) {
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.request-inbox,
+	.ai-action-list {
 		align-content: start;
 		gap: 8px;
-		min-height: 0;
 		overflow: auto;
 		padding-right: 2px;
 	}
 
-	.request-card {
+	.request-card,
+	.ai-action-card {
 		display: grid;
-		grid-template-columns: minmax(0, 1fr) auto;
 		gap: 7px 10px;
 		padding: 9px;
 		border: 1px solid var(--line);
 		border-radius: 4px;
 		background: rgba(255, 255, 255, 0.32);
+	}
+
+	.request-card {
+		grid-template-columns: minmax(0, 1fr) auto;
 	}
 
 	.request-card > div {
@@ -1729,6 +1872,75 @@
 	.request-card .icon-button {
 		width: 30px;
 		min-height: 30px;
+	}
+
+	.ai-action-card {
+		grid-template-columns: minmax(0, 1fr);
+	}
+
+	.ai-action-meta {
+		display: flex;
+		min-width: 0;
+		align-items: center;
+		gap: 7px;
+	}
+
+	.ai-action-meta :global(svg) {
+		width: 14px;
+		height: 14px;
+		flex: 0 0 auto;
+	}
+
+	.ai-action-meta time {
+		margin-left: auto;
+		color: var(--ink-faint);
+		font-size: 10px;
+	}
+
+	.ai-status {
+		display: inline-flex;
+		min-width: 0;
+		align-items: center;
+		min-height: 20px;
+		padding: 0 7px;
+		border-radius: 999px;
+		background: rgba(20, 19, 17, 0.08);
+		color: var(--ink-dim);
+		font-size: 9px;
+		font-weight: 800;
+		text-transform: uppercase;
+	}
+
+	.ai-status.played {
+		background: rgba(31, 118, 108, 0.14);
+		color: #1f766c;
+	}
+
+	.ai-status.pending {
+		background: rgba(213, 166, 66, 0.2);
+		color: #775a15;
+	}
+
+	.ai-status.warning {
+		background: rgba(181, 31, 36, 0.12);
+		color: var(--signal);
+	}
+
+	.ai-action-card p {
+		margin: 0;
+		color: var(--ink);
+		font-size: 11px;
+		line-height: 1.35;
+		overflow-wrap: anywhere;
+	}
+
+	.ai-action-card .ai-request {
+		color: var(--ink-dim);
+	}
+
+	.ai-action-card .ai-track {
+		color: #1f766c;
+		font-weight: 700;
 	}
 
 	.mic-pad {
@@ -1925,6 +2137,10 @@
 
 		.queue-items {
 			overflow: visible;
+		}
+
+		.request-panel-body {
+			grid-template-columns: 1fr;
 		}
 	}
 </style>
