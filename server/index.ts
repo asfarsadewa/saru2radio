@@ -19,6 +19,7 @@ import { ActiveListenerCounter } from './listener-count.js';
 import { DIST_DIR } from './paths.js';
 import { ListenerMessageStore, ListenerMessageValidationError } from './listener-messages.js';
 import { DirectMp3Playout } from './playout.js';
+import { PreparationBusyError, PreparationManager } from './preparation.js';
 import {
 	createRateLimitMiddleware,
 	createStudioOriginGuard,
@@ -56,6 +57,7 @@ let nowPlaying: NowPlaying = {
 
 const radioToolPath = await resolveExistingPath(resolveRadioToolPath());
 const library = new LibraryManager(radioToolPath);
+const preparation = new PreparationManager(radioToolPath);
 const studioState = new StudioStateStore();
 const listenerMessages = new ListenerMessageStore();
 const aiDjActions = new AiDjActionStore();
@@ -211,11 +213,38 @@ function createStudioApp() {
 			next(error);
 		}
 	});
-	app.post('/api/library/prepare', async (request, response, next) => {
+	app.get('/api/preparation', (_request, response) => response.json(preparation.getState()));
+	app.post('/api/preparation/inspect', async (request, response, next) => {
 		try {
-			const trackIds = Array.isArray(request.body.trackIds) ? request.body.trackIds.map(String) : undefined;
-			response.json(await library.prepare(trackIds, { continueOnError: true }));
+			const directory = String(request.body.directory ?? '');
+			const recursive = Boolean(request.body.recursive);
+			const state = await preparation.inspect(directory, { recursive });
+			await studioState.update({ prepDirectory: state.directory });
+			response.json(state);
 		} catch (error) {
+			if (error instanceof PreparationBusyError) {
+				response.status(409).type('text/plain').send(error.message);
+				return;
+			}
+			next(error);
+		}
+	});
+	app.post('/api/preparation/start', async (request, response, next) => {
+		try {
+			if (currentStatus().onAir) {
+				response.status(409).type('text/plain').send('Go off air before preparing radio copies.');
+				return;
+			}
+			const directory = String(request.body.directory ?? '');
+			const recursive = Boolean(request.body.recursive);
+			const state = preparation.start(directory, { recursive });
+			await studioState.update({ prepDirectory: directory });
+			response.status(202).json(state);
+		} catch (error) {
+			if (error instanceof PreparationBusyError) {
+				response.status(409).type('text/plain').send(error.message);
+				return;
+			}
 			next(error);
 		}
 	});
@@ -236,6 +265,10 @@ function createStudioApp() {
 
 	app.post('/api/broadcast/start', async (request, response, next) => {
 		try {
+			if (preparation.isActive()) {
+				response.status(409).type('text/plain').send('Wait for radio-copy preparation to finish before going on air.');
+				return;
+			}
 			const queue = resolveBroadcastQueue(request.body?.trackIds);
 			await startDirectPlayout(queue);
 			status = {
@@ -250,6 +283,10 @@ function createStudioApp() {
 	});
 	app.post('/api/broadcast/play-now', async (request, response, next) => {
 		try {
+			if (preparation.isActive()) {
+				response.status(409).type('text/plain').send('Wait for radio-copy preparation to finish before going on air.');
+				return;
+			}
 			const queue = resolveBroadcastQueue(request.body?.trackIds);
 			await startDirectPlayout(queue, { playNow: true });
 			status = {
@@ -462,6 +499,10 @@ function attachSourceSocket(socketServer: WebSocketServer) {
 			if (!isBinary) {
 				const message = JSON.parse(data.toString()) as { type?: string; bitrateKbps?: number };
 				if (message.type === 'start') {
+					if (preparation.isActive()) {
+						socket.close(1013, 'Radio-copy preparation is running.');
+						return;
+					}
 					const wasPlayoutRunning = playout.isRunning();
 					sessionId = browserSourceSessions.begin();
 					playout.stop();

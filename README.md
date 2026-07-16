@@ -107,7 +107,7 @@ npm run start
 
 ## Preparing Music
 
-The app can scan a folder of ready MP3 files directly. For the intended retro sound, prepare radio copies first with `make-radio-sound.exe`.
+The app can scan a folder of ready MP3 files directly. For the intended retro sound, the local Studio can inspect the source folder, prepare missing or stale radio copies, show per-track progress, and load the completed cache automatically.
 
 By default the app looks for the tool at:
 
@@ -127,7 +127,16 @@ You can override it:
 $env:RADIO_SOUND_EXE='C:\path\to\make-radio-sound.exe'
 ```
 
-Prepare a folder:
+From the Studio:
+
+1. Pick or enter the original music folder.
+2. Use **Scan** to load broadcast tracks and inspect the radio-copy cache.
+3. Use **Prepare** to process only missing or stale tracks.
+4. Keep the Studio open while it reports progress. When preparation finishes, the prepared library is loaded automatically.
+
+Preparation is disabled while the station is on air. Source files are never modified; generated output stays under `.saru2radio-cache`.
+
+The equivalent local command is:
 
 ```powershell
 npm run prepare:radio -- "C:\path\to\music"
@@ -155,7 +164,7 @@ Music/
       <track>.radio.mp3
 ```
 
-In the studio, scan either the original folder that contains `.saru2radio-cache`, the `.saru2radio-cache` folder, or the `.saru2radio-cache/tracks` folder.
+In the Studio, use the original folder that contains `.saru2radio-cache` when preparing songs so manifest titles and artists remain available. The `.saru2radio-cache` folder and its `tracks` folder can also be scanned as ready broadcast libraries, but the Studio will not prepare those cached copies again.
 
 ## DJ Studio Workflow
 
@@ -163,11 +172,12 @@ In the studio, scan either the original folder that contains `.saru2radio-cache`
 2. Open `http://127.0.0.1:8011/`.
 3. Choose or type a broadcast folder.
 4. Use **Scan**.
-5. Keep **Direct songs** selected for normal playback.
-6. Click **ON AIR**.
-7. Share the listener URL, or start the tunnel if configured.
-8. Use **Skip**, **Shuffle/Ordered**, or click a ready track for ad-hoc switching.
-9. Hold the mic button for a direct talk break. In direct mode the song pauses while the mic break is live.
+5. If the cache summary reports missing or stale copies, use **Prepare** and wait for the prepared library to load.
+6. Keep **Direct songs** selected for normal playback.
+7. Click **ON AIR**.
+8. Share the listener URL, or start the tunnel if configured.
+9. Use **Skip**, **Shuffle/Ordered**, or click a ready track for ad-hoc switching.
+10. Hold the mic button for a direct talk break. In direct mode the song pauses while the mic break is live.
 10. Click **OFF AIR** when finished.
 
 For a voice-only program, keep **Direct songs** selected, switch the Direct submode from **Songs** to **Voice**, then click **ON AIR**. The mic button latches on/off, and the ambient bed control sets the generated background level.

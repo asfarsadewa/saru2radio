@@ -40,6 +40,54 @@ describe('LibraryManager', () => {
 		}
 	});
 
+	it('rejects preparation from broadcast-library state before an output can touch source audio', async () => {
+		const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'saru2radio-broadcast-guard-'));
+		const sourcePath = path.join(directory, 'original.mp3');
+		let runnerCalled = false;
+
+		try {
+			await fs.writeFile(sourcePath, 'original-audio');
+			const manager = new LibraryManager('fake-tool', async () => {
+				runnerCalled = true;
+			});
+			await manager.scanBroadcast(directory);
+
+			await expect(manager.prepare()).rejects.toThrow('Preparation requires a source scan');
+			expect(runnerCalled).toBe(false);
+			expect(await fs.readFile(sourcePath, 'utf8')).toBe('original-audio');
+		} finally {
+			await fs.rm(directory, { recursive: true, force: true });
+		}
+	});
+
+	it('prepares source scans under the cache and preserves original audio', async () => {
+		const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'saru2radio-source-safety-'));
+		const sourcePath = path.join(directory, 'original.mp3');
+
+		try {
+			await fs.writeFile(sourcePath, 'original-audio');
+			const manager = new LibraryManager('fake-tool', async (_exePath, input, output) => {
+				expect(input).toBe(sourcePath);
+				expect(output).toContain(path.join('.saru2radio-cache', 'tracks'));
+				expect(output).not.toBe(sourcePath);
+				await fs.writeFile(output, 'prepared-audio');
+			});
+			await manager.scan(directory, { recursive: false });
+			const prepared = await manager.prepare();
+
+			expect(prepared.tracks[0].cacheReady).toBe(true);
+			expect(await fs.readFile(sourcePath, 'utf8')).toBe('original-audio');
+			expect(await fs.readFile(prepared.tracks[0].cachePath, 'utf8')).toBe('prepared-audio');
+
+			const manifest = JSON.parse(
+				await fs.readFile(path.join(directory, '.saru2radio-cache', 'manifest.json'), 'utf8')
+			) as { tracks: Record<string, unknown> };
+			expect(Object.keys(manifest.tracks)).toEqual([prepared.tracks[0].id]);
+		} finally {
+			await fs.rm(directory, { recursive: true, force: true });
+		}
+	});
+
 	it('can scan only the selected directory root for CLI preparation', async () => {
 		const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'saru2radio-library-'));
 
@@ -56,6 +104,28 @@ describe('LibraryManager', () => {
 
 			const recursive = await manager.scan(directory);
 			expect(recursive.tracks.map((track) => track.fileName).sort()).toEqual(['nested.mp3', 'root.mp3']);
+		} finally {
+			await fs.rm(directory, { recursive: true, force: true });
+		}
+	});
+
+	it('rejects cache folders as preparation sources while keeping them valid for broadcast scans', async () => {
+		const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'saru2radio-cache-source-guard-'));
+		const cacheDirectory = path.join(directory, '.saru2radio-cache');
+		const tracksDirectory = path.join(cacheDirectory, 'tracks');
+
+		try {
+			await fs.mkdir(tracksDirectory, { recursive: true });
+			await fs.writeFile(path.join(tracksDirectory, 'copy.radio.mp3'), 'prepared');
+
+			await expect(new LibraryManager(null).scan(cacheDirectory)).rejects.toThrow('original music folder');
+			await expect(new LibraryManager(null).scan(tracksDirectory)).rejects.toThrow('original music folder');
+
+			const broadcast = await new LibraryManager(null).scanBroadcast(tracksDirectory);
+			expect(broadcast).toMatchObject({
+				sourceKind: 'cache-tracks',
+				tracks: [{ fileName: 'copy.radio.mp3', cacheReady: true }]
+			});
 		} finally {
 			await fs.rm(directory, { recursive: true, force: true });
 		}

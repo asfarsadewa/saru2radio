@@ -80,6 +80,42 @@ export type LibraryState = {
 	sourceKind: 'empty' | 'ready-folder' | 'cache-manifest' | 'cache-tracks' | 'prepare-source';
 };
 
+export type PreparationPhase = 'idle' | 'scanning' | 'ready' | 'preparing' | 'completed' | 'error';
+
+export type PreparationFailure = {
+	trackId: string;
+	fileName: string;
+	message: string;
+};
+
+export type PreparationCurrentTrack = {
+	trackId: string;
+	fileName: string;
+	index: number;
+	total: number;
+};
+
+export type PreparationState = {
+	phase: PreparationPhase;
+	directory: string;
+	recursive: boolean;
+	toolAvailable: boolean;
+	total: number;
+	ready: number;
+	pending: number;
+	stale: number;
+	completed: number;
+	converted: number;
+	skipped: number;
+	failed: number;
+	currentTrack: PreparationCurrentTrack | null;
+	failures: PreparationFailure[];
+	startedAt: string | null;
+	finishedAt: string | null;
+	updatedAt: string | null;
+	error: string | null;
+};
+
 export type StudioState = {
 	broadcastDirectory: string;
 	broadcastRecursive: boolean;

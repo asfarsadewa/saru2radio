@@ -6,6 +6,7 @@
 		ListMusic,
 		MessageSquare,
 		Mic,
+		Radio,
 		RefreshCw,
 		Shuffle,
 		SkipForward,
@@ -25,14 +26,17 @@
 		getLibrary,
 		getListenerMessages,
 		getNowPlaying,
+		getPreparation,
 		getStatus,
 		getStudioState,
 		getTunnel,
 		pickFolder,
 		playBroadcastNow,
+		inspectPreparation,
 		scanLibrary,
 		skipBroadcast,
 		startBroadcast,
+		startPreparation,
 		startTunnel,
 		stopBroadcast,
 		stopTunnel,
@@ -42,7 +46,17 @@
 	} from '../lib/api';
 	import { StudioEngine, type MicCaptureState, type MicColorMode } from '../lib/audio/studioEngine';
 	import { createPlaybackQueue, cueTrackInQueue, reconcileQueueWithTracks, rotateQueueToTrack } from '../lib/queue';
-	import type { AiDjAction, BroadcastStatus, LibraryState, ListenerMessage, NowPlaying, ServerConfig, Track, TunnelState } from '../lib/types';
+	import type {
+		AiDjAction,
+		BroadcastStatus,
+		LibraryState,
+		ListenerMessage,
+		NowPlaying,
+		PreparationState,
+		ServerConfig,
+		Track,
+		TunnelState
+	} from '../lib/types';
 
 	type BroadcastMode = 'direct' | 'mixer';
 	type DirectProgramMode = 'songs' | 'voice';
@@ -56,6 +70,26 @@
 		recursive: false,
 		sourceKind: 'empty'
 	};
+	let preparation: PreparationState = {
+		phase: 'idle',
+		directory: '',
+		recursive: false,
+		toolAvailable: false,
+		total: 0,
+		ready: 0,
+		pending: 0,
+		stale: 0,
+		completed: 0,
+		converted: 0,
+		skipped: 0,
+		failed: 0,
+		currentTrack: null,
+		failures: [],
+		startedAt: null,
+		finishedAt: null,
+		updatedAt: null,
+		error: null
+	};
 	let status: BroadcastStatus | null = null;
 	let tunnel: TunnelState = { running: false, url: null, startedAt: null, error: null, mode: null, hostname: null, configured: false };
 	let directoryInput = '';
@@ -67,6 +101,7 @@
 	let ordered = false;
 	let errorMessage = '';
 	let busyMessage = '';
+	let libraryScanning = false;
 	let outputLevel = 0.05;
 	let micLevel = 0;
 	let micDevices: MediaDeviceInfo[] = [];
@@ -92,6 +127,8 @@
 	let micOpen = false;
 	let micReady = false;
 	let pollTimer: number | undefined;
+	let preparationPollTimer: number | undefined;
+	let handledPreparationFinishedAt: string | null = null;
 	let directMonitorAudio: HTMLAudioElement | null = null;
 	let directMonitorBaseUrl = '';
 	let directMonitorContext: AudioContext | null = null;
@@ -102,7 +139,6 @@
 	const engine = new StudioEngine();
 
 	$: readyTracks = library.tracks.filter((track) => track.cacheReady);
-	$: missingCount = library.tracks.filter((track) => !track.cacheReady).length;
 	$: onAir = Boolean(status?.onAir);
 	$: sourceConnected = Boolean(status?.sourceConnected);
 	$: activeListeners = status?.activeListeners ?? 0;
@@ -137,16 +173,43 @@
 					: 'Hold mic';
 	$: micStatusLabel = micReady ? (micMuted ? 'MIC MUTED' : voiceProgramOnAir ? 'VOICE MIC READY' : directOnAir ? 'TALK BREAK READY' : 'MIC READY') : 'MIC NOT CONNECTED';
 	$: micDetail = micMessage || micLabel || (voiceProgramOnAir ? 'Voice program standby.' : directOnAir ? 'Hold to pause songs and talk.' : 'Choose an input, then go on air.');
+	$: preparationActive = preparation.phase === 'scanning' || preparation.phase === 'preparing';
+	$: preparationMatchesInput = sameDirectory(preparation.directory, directoryInput);
+	$: preparationProgressMax = Math.max(1, preparation.total);
+	$: preparationButtonLabel =
+		preparationActive && preparation.currentTrack
+			? `${preparation.currentTrack.index}/${preparation.currentTrack.total}`
+			: preparationMatchesInput && preparation.pending > 0
+				? `Prepare ${preparation.pending}`
+				: preparationMatchesInput && preparation.total > 0
+					? 'Prepared'
+					: 'Prepare';
+	$: preparationDisabled =
+		onAir ||
+		preparationActive ||
+		libraryScanning ||
+		!directoryInput.trim() ||
+		!config?.radioToolPath ||
+		(preparationMatchesInput &&
+			(Boolean(preparation.error) ||
+				(preparation.phase !== 'idle' && preparation.total === 0) ||
+				(preparation.total > 0 && preparation.pending === 0)));
 
 	onMount(async () => {
 		await refreshAll();
 		await refreshMicrophones();
 		pollTimer = window.setInterval(refreshStatusOnly, 2500);
+		if (isPreparationActive(preparation)) {
+			schedulePreparationPoll();
+		}
 	});
 
 	onDestroy(() => {
 		if (pollTimer) {
 			window.clearInterval(pollTimer);
+		}
+		if (preparationPollTimer) {
+			window.clearTimeout(preparationPollTimer);
 		}
 		stopDirectMonitor();
 		void closeDirectMonitorMeter();
@@ -155,9 +218,20 @@
 
 	async function refreshAll() {
 		try {
-			const [nextConfig, nextLibrary, nextStatus, nextTunnel, nextNowPlaying, nextListenerMessages, nextAiDjActions, studioState] = await Promise.all([
+			const [
+				nextConfig,
+				nextLibrary,
+				nextPreparation,
+				nextStatus,
+				nextTunnel,
+				nextNowPlaying,
+				nextListenerMessages,
+				nextAiDjActions,
+				studioState
+			] = await Promise.all([
 				getConfig(),
 				getLibrary(),
+				getPreparation(),
 				getStatus(),
 				getTunnel(),
 				getNowPlaying(),
@@ -167,6 +241,7 @@
 			]);
 			config = nextConfig;
 			library = nextLibrary;
+			preparation = nextPreparation;
 			status = nextStatus;
 			tunnel = nextTunnel;
 			nowPlaying = nextNowPlaying;
@@ -174,8 +249,9 @@
 			aiDjActions = nextAiDjActions;
 			ordered = studioState.ordered;
 			libraryRecursive = studioState.broadcastRecursive;
-			directoryInput = library.directory || studioState.broadcastDirectory;
+			directoryInput = library.directory || studioState.broadcastDirectory || studioState.prepDirectory;
 			buildQueue();
+			await handlePreparationTerminal();
 		} catch (error) {
 			setError(error);
 		}
@@ -212,8 +288,15 @@
 	async function scan() {
 		errorMessage = '';
 		busyMessage = 'Scanning library';
+		libraryScanning = true;
 		try {
-			library = await scanLibrary(directoryInput, libraryRecursive);
+			const [nextLibrary, nextPreparation] = await Promise.all([
+				scanLibrary(directoryInput, libraryRecursive),
+				inspectPreparation(directoryInput, libraryRecursive)
+			]);
+			library = nextLibrary;
+			preparation = nextPreparation;
+			directoryInput = nextLibrary.directory;
 			await updateStudioState({ broadcastRecursive: libraryRecursive });
 			buildQueue();
 			if (directSongsOnAir && queue.length > 0) {
@@ -222,7 +305,69 @@
 		} catch (error) {
 			setError(error);
 		} finally {
+			libraryScanning = false;
 			busyMessage = '';
+		}
+	}
+
+	async function prepareFolder() {
+		errorMessage = '';
+		try {
+			preparation = await startPreparation(directoryInput, libraryRecursive);
+			handledPreparationFinishedAt = null;
+			schedulePreparationPoll(250);
+		} catch (error) {
+			setError(error);
+		}
+	}
+
+	function schedulePreparationPoll(delay = 500) {
+		if (preparationPollTimer) {
+			window.clearTimeout(preparationPollTimer);
+		}
+		preparationPollTimer = window.setTimeout(() => {
+			void pollPreparation();
+		}, delay);
+	}
+
+	async function pollPreparation() {
+		try {
+			preparation = await getPreparation();
+			if (isPreparationActive(preparation)) {
+				schedulePreparationPoll();
+				return;
+			}
+			await handlePreparationTerminal();
+		} catch (error) {
+			setError(error);
+			if (isPreparationActive(preparation)) {
+				schedulePreparationPoll(1500);
+			}
+		}
+	}
+
+	async function handlePreparationTerminal() {
+		if (
+			preparation.phase !== 'completed' ||
+			!preparation.finishedAt ||
+			preparation.finishedAt === handledPreparationFinishedAt ||
+			Boolean(status?.onAir)
+		) {
+			return;
+		}
+
+		handledPreparationFinishedAt = preparation.finishedAt;
+		if (preparation.total > 0 && preparation.ready === 0) {
+			return;
+		}
+		try {
+			library = await scanLibrary(preparation.directory, preparation.recursive);
+			directoryInput = library.directory;
+			libraryRecursive = preparation.recursive;
+			await updateStudioState({ broadcastRecursive: preparation.recursive });
+			buildQueue();
+		} catch (error) {
+			setError(error);
 		}
 	}
 
@@ -524,6 +669,7 @@
 		activeDirectProgram = null;
 		nowPlaying = null;
 		outputLevel = 0.05;
+		await handlePreparationTerminal();
 	}
 
 	async function skipTrack() {
@@ -954,6 +1100,15 @@
 		errorMessage = error instanceof Error ? error.message : 'Unexpected error.';
 	}
 
+	function sameDirectory(left: string, right: string): boolean {
+		const normalize = (value: string) => value.trim().replace(/[\\/]+$/, '').toLowerCase();
+		return Boolean(left && right && normalize(left) === normalize(right));
+	}
+
+	function isPreparationActive(state: PreparationState): boolean {
+		return state.phase === 'scanning' || state.phase === 'preparing';
+	}
+
 	function formatDuration(seconds: number | null): string {
 		if (!seconds || !Number.isFinite(seconds)) {
 			return '--:--';
@@ -1038,36 +1193,109 @@
 					<span class="eyebrow">library</span>
 					<h2>Broadcast library</h2>
 				</div>
-				<button class="icon-button" type="button" aria-label="Refresh" on:click={refreshAll}>
+				<button
+					class="icon-button"
+					type="button"
+					disabled={preparationActive || libraryScanning}
+					aria-label="Refresh"
+					on:click={refreshAll}
+				>
 					<RefreshCw />
 				</button>
 			</div>
 
 			<label class="field">
 				<span>Broadcast folder</span>
-				<input bind:value={directoryInput} placeholder="C:\Music\saru2radio" />
+				<input bind:value={directoryInput} disabled={preparationActive || libraryScanning} placeholder="C:\Music\saru2radio" />
 			</label>
 			<label class="toggle compact-toggle">
-				<input type="checkbox" bind:checked={libraryRecursive} on:change={() => updateStudioState({ broadcastRecursive: libraryRecursive })} />
+				<input
+					type="checkbox"
+					bind:checked={libraryRecursive}
+					disabled={preparationActive || libraryScanning}
+					on:change={() => updateStudioState({ broadcastRecursive: libraryRecursive })}
+				/>
 				<span>Include subfolders</span>
 			</label>
 
 			<div class="action-row">
-				<button class="tool-button" type="button" on:click={chooseFolder}>
+				<button class="tool-button" type="button" disabled={preparationActive || libraryScanning} on:click={chooseFolder}>
 					<FolderOpen />
 					Pick
 				</button>
-				<button class="tool-button" type="button" on:click={scan}>
+				<button class="tool-button" type="button" disabled={preparationActive || libraryScanning} on:click={scan}>
 					<ListMusic />
 					Scan
+				</button>
+				<button class="solid-button prepare-button" type="button" disabled={preparationDisabled} on:click={prepareFolder}>
+					<Radio />
+					{preparationButtonLabel}
 				</button>
 			</div>
 
 			<div class="library-stats">
 				<span>{library.tracks.length} tracks</span>
 				<span>{readyTracks.length} ready to air</span>
-				<span>{missingCount} pending</span>
+				{#if preparationMatchesInput && preparation.phase !== 'idle'}
+					<span>{preparation.ready} radio copies</span>
+				{/if}
 			</div>
+
+			{#if preparationMatchesInput && preparation.phase !== 'idle'}
+				<div
+					class:error={preparation.phase === 'error' || preparation.failed > 0 || Boolean(preparation.error)}
+					class="preparation-status"
+					aria-live="polite"
+				>
+					<div class="preparation-status-head">
+						<span>
+							{#if preparation.phase === 'scanning'}
+								Inspecting source
+							{:else if preparation.phase === 'preparing'}
+								Preparing radio copies
+							{:else if preparation.phase === 'completed'}
+								Preparation complete
+							{:else if preparation.phase === 'error'}
+								Preparation stopped
+							{:else}
+								Radio-copy cache
+							{/if}
+						</span>
+						<strong>{preparation.ready}/{preparation.total}</strong>
+					</div>
+					{#if preparationActive}
+						<progress value={preparation.completed} max={preparationProgressMax}>{preparation.completed} of {preparation.total}</progress>
+						<p title={preparation.currentTrack?.fileName ?? ''}>
+							{preparation.currentTrack
+								? `${preparation.currentTrack.index} of ${preparation.currentTrack.total} · ${preparation.currentTrack.fileName}`
+								: preparation.phase === 'scanning'
+									? 'Reading source tracks…'
+									: 'Starting processor…'}
+						</p>
+					{:else if preparation.phase === 'completed'}
+						<p>{preparation.converted} converted · {preparation.skipped} unchanged · {preparation.failed} failed</p>
+					{:else if preparation.phase === 'error'}
+						<p>{preparation.error}</p>
+					{:else}
+						<p>
+							{preparation.error
+								? preparation.error
+								: preparation.total === 0
+									? 'No supported source tracks found.'
+									: preparation.pending === 0
+								? 'All source tracks have fresh radio copies.'
+								: `${preparation.pending} ${preparation.pending === 1 ? 'track needs' : 'tracks need'} preparation${preparation.stale > 0 ? ` · ${preparation.stale} stale` : ''}.`}
+						</p>
+					{/if}
+					{#if preparation.failures.length > 0}
+						<p class="preparation-error" title={preparation.failures[0].message}>
+							{preparation.failures[0].fileName}: {preparation.failures[0].message}
+						</p>
+					{/if}
+				</div>
+			{:else if config && !config.radioToolPath}
+				<p class="processor-note">Radio processor unavailable. Run setup:radio-sound on this machine.</p>
+			{/if}
 
 			<div class="track-list" aria-label="Track list">
 				{#each library.tracks as track (track.id)}
@@ -1116,7 +1344,13 @@
 			</div>
 
 			<div class="transport panel">
-				<button class:live={onAir} class="broadcast-button" type="button" disabled={directProgramSwitching} on:click={onAir ? goOffAir : goOnAir}>
+				<button
+					class:live={onAir}
+					class="broadcast-button"
+					type="button"
+					disabled={directProgramSwitching || preparationActive}
+					on:click={onAir ? goOffAir : goOnAir}
+				>
 					{#if onAir}
 						<StopCircle />
 						OFF AIR
@@ -1482,7 +1716,16 @@
 	}
 
 	.action-row {
+		flex-wrap: wrap;
 		gap: 8px;
+	}
+
+	.action-row .tool-button {
+		flex: 1 1 92px;
+	}
+
+	.prepare-button {
+		flex: 1 1 100%;
 	}
 
 	.library-stats {
@@ -1491,6 +1734,59 @@
 		color: var(--ink-dim);
 		font-size: 11px;
 		text-transform: uppercase;
+	}
+
+	.preparation-status {
+		display: grid;
+		gap: 7px;
+		padding: 9px;
+		border: 1px solid var(--line);
+		border-radius: 4px;
+		background: rgba(31, 118, 108, 0.06);
+	}
+
+	.preparation-status.error {
+		border-color: rgba(181, 31, 36, 0.32);
+		background: rgba(181, 31, 36, 0.05);
+	}
+
+	.preparation-status-head {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 8px;
+		color: var(--ink-faint);
+		font-size: 9px;
+		font-weight: 700;
+		letter-spacing: 0.12em;
+		text-transform: uppercase;
+	}
+
+	.preparation-status-head strong {
+		color: var(--ink);
+		font-size: 10px;
+	}
+
+	.preparation-status progress {
+		width: 100%;
+		height: 6px;
+		accent-color: var(--green);
+	}
+
+	.preparation-status p,
+	.processor-note {
+		margin: 0;
+		overflow: hidden;
+		color: var(--ink-dim);
+		font-size: 10px;
+		line-height: 1.35;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.preparation-status .preparation-error,
+	.processor-note {
+		color: var(--signal);
 	}
 
 	.track-list,

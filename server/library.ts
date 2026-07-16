@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -34,7 +35,7 @@ type CacheManifest = {
 	tracks: Record<string, ManifestTrack>;
 };
 
-type PrepareProgress = {
+export type PrepareProgress = {
 	type: 'skip' | 'start' | 'success' | 'error';
 	track: Track;
 	index: number;
@@ -42,14 +43,16 @@ type PrepareProgress = {
 	message?: string;
 };
 
-type PrepareOptions = {
+export type PrepareOptions = {
 	continueOnError?: boolean;
 	onProgress?: (progress: PrepareProgress) => void;
 };
 
-type ScanOptions = {
+export type ScanOptions = {
 	recursive?: boolean;
 };
+
+export type RadioToolRunner = (exePath: string, input: string, output: string, seed: number) => Promise<void>;
 
 export class LibraryManager {
 	private state: LibraryState = {
@@ -61,7 +64,10 @@ export class LibraryManager {
 		sourceKind: 'empty'
 	};
 
-	constructor(private readonly radioToolPath: string | null) {}
+	constructor(
+		private readonly radioToolPath: string | null,
+		private readonly radioToolRunner: RadioToolRunner = runRadioTool
+	) {}
 
 	getState(): LibraryState {
 		return structuredClone(this.state);
@@ -69,6 +75,10 @@ export class LibraryManager {
 
 	async scan(directory: string, options: ScanOptions = {}): Promise<LibraryState> {
 		const normalized = path.resolve(directory);
+		const sourceDirectoryError = preparationSourceDirectoryError(normalized);
+		if (sourceDirectoryError) {
+			throw new Error(sourceDirectoryError);
+		}
 		const stat = await fs.stat(normalized);
 		if (!stat.isDirectory()) {
 			throw new Error('Music path is not a directory.');
@@ -148,6 +158,10 @@ export class LibraryManager {
 			throw new Error('Scan a music directory first.');
 		}
 
+		if (this.state.sourceKind !== 'prepare-source') {
+			throw new Error('Preparation requires a source scan. Broadcast-library tracks cannot be used as preparation outputs.');
+		}
+
 		if (!this.radioToolPath) {
 			throw new Error('make-radio-sound.exe was not found. Run `npm run setup:radio-sound` or set RADIO_SOUND_EXE.');
 		}
@@ -156,7 +170,16 @@ export class LibraryManager {
 		const selected = new Set(trackIds?.length ? trackIds : this.state.tracks.map((track) => track.id));
 		const selectedTracks = this.state.tracks.filter((track) => selected.has(track.id));
 		const manifest = await readManifest(this.state.directory);
+		const sourceTrackIds = new Set(this.state.tracks.map((track) => track.id));
+		for (const manifestTrackId of Object.keys(manifest.tracks)) {
+			if (!sourceTrackIds.has(manifestTrackId)) {
+				delete manifest.tracks[manifestTrackId];
+			}
+		}
 		const tracksDir = path.join(this.state.directory, CACHE_DIR_NAME, 'tracks');
+		for (const track of selectedTracks) {
+			assertSafeCacheOutput(track, tracksDir);
+		}
 		await fs.mkdir(tracksDir, { recursive: true });
 
 		try {
@@ -190,7 +213,12 @@ export class LibraryManager {
 
 				options.onProgress?.({ type: 'start', track, index: index + 1, total: selectedTracks.length });
 				try {
-					await runRadioTool(this.radioToolPath, track.sourcePath, track.cachePath, stableTrackSeed(track.sourcePath));
+					await this.radioToolRunner(
+						this.radioToolPath,
+						track.sourcePath,
+						track.cachePath,
+						stableTrackSeed(track.sourcePath)
+					);
 					track.cacheReady = true;
 					track.cacheStale = false;
 					track.playPath = track.cachePath;
@@ -246,6 +274,14 @@ export function resolveRadioToolPath(): string | null {
 	}
 
 	return RADIO_SOUND_EXE;
+}
+
+export function preparationSourceDirectoryError(directory: string): string | null {
+	const segments = path.resolve(directory).split(path.sep).map((segment) => segment.toLowerCase());
+	if (segments.includes(CACHE_DIR_NAME)) {
+		return 'Choose the original music folder for preparation, not its .saru2radio-cache folder.';
+	}
+	return null;
 }
 
 async function findAudioFiles(directory: string, options: Required<ScanOptions>): Promise<string[]> {
@@ -421,19 +457,38 @@ async function readTrackMetadata(filePath: string): Promise<{ title: string; art
 
 async function runRadioTool(exePath: string, input: string, output: string, seed: number): Promise<void> {
 	await fs.mkdir(path.dirname(output), { recursive: true });
-	await execFileAsync(exePath, [
-		input,
-		'-o',
-		output,
-		'--mode',
-		RADIO_PRESET.mode,
-		'--intensity',
-		String(RADIO_PRESET.intensity),
-		'--seed',
-		String(seed),
-		'--format',
-		RADIO_PRESET.format
-	]);
+	const temporaryOutput = path.join(path.dirname(output), `${path.basename(output, '.mp3')}.${randomUUID()}.partial.mp3`);
+	try {
+		await execFileAsync(exePath, [
+			input,
+			'-o',
+			temporaryOutput,
+			'--mode',
+			RADIO_PRESET.mode,
+			'--intensity',
+			String(RADIO_PRESET.intensity),
+			'--seed',
+			String(seed),
+			'--format',
+			RADIO_PRESET.format
+		]);
+		await fs.rm(output, { force: true });
+		await fs.rename(temporaryOutput, output);
+	} finally {
+		await fs.rm(temporaryOutput, { force: true });
+	}
+}
+
+function assertSafeCacheOutput(track: Track, tracksDirectory: string): void {
+	const source = path.resolve(track.sourcePath);
+	const output = path.resolve(track.cachePath);
+	const cacheRoot = path.resolve(tracksDirectory);
+	const relative = path.relative(cacheRoot, output);
+	const outputInsideCache = relative !== '' && !relative.startsWith('..') && !path.isAbsolute(relative);
+
+	if (!outputInsideCache || output.toLowerCase() === source.toLowerCase()) {
+		throw new Error(`Unsafe radio-copy output rejected for ${track.fileName}.`);
+	}
 }
 
 function formatPrepareError(error: unknown): string {

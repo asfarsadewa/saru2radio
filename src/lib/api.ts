@@ -1,4 +1,14 @@
-import type { AiDjAction, BroadcastStatus, LibraryState, ListenerMessage, NowPlaying, ServerConfig, StudioState, TunnelState } from './types';
+import type {
+	AiDjAction,
+	BroadcastStatus,
+	LibraryState,
+	ListenerMessage,
+	NowPlaying,
+	PreparationState,
+	ServerConfig,
+	StudioState,
+	TunnelState
+} from './types';
 
 async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
 	const response = await fetch(path, {
@@ -47,10 +57,21 @@ export function updateStudioState(patch: Partial<StudioState>): Promise<StudioSt
 	});
 }
 
-export function prepareLibrary(trackIds?: string[]): Promise<LibraryState> {
-	return requestJson<LibraryState>('/api/library/prepare', {
+export function getPreparation(): Promise<PreparationState> {
+	return requestJson<PreparationState>('/api/preparation');
+}
+
+export function inspectPreparation(directory: string, recursive = false): Promise<PreparationState> {
+	return requestJson<PreparationState>('/api/preparation/inspect', {
 		method: 'POST',
-		body: JSON.stringify({ trackIds })
+		body: JSON.stringify({ directory, recursive })
+	});
+}
+
+export function startPreparation(directory: string, recursive = false): Promise<PreparationState> {
+	return requestJson<PreparationState>('/api/preparation/start', {
+		method: 'POST',
+		body: JSON.stringify({ directory, recursive })
 	});
 }
 
