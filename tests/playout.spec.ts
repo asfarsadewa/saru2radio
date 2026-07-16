@@ -75,6 +75,28 @@ describe('DirectMp3Playout', () => {
 		expect(source.disconnectCalls).toBe(1);
 		expect(errors).toEqual([]);
 	});
+
+	it('queues a requested track after the actual current direct-playout track', async () => {
+		const source = new FakeSource();
+		const first = await createTrack('first');
+		const second = await createTrack('second');
+		const requested = await createTrack('requested');
+		const seenTracks: string[] = [];
+		const playout = new DirectMp3Playout(source as never, {
+			onTrack: (track) => seenTracks.push(track.id),
+			onStop: () => {},
+			onError: () => {}
+		});
+
+		playout.start([first, second, requested]);
+		expect(seenTracks[0]).toBe('first');
+
+		expect(playout.queueNext(requested).map((track) => track.id)).toEqual(['first', 'requested', 'second']);
+		playout.setQueue([second, requested, first]);
+		expect(playout.queueNext(second).map((track) => track.id)).toEqual(['requested', 'first', 'second']);
+		expect(source.connectCalls).toBe(1);
+		playout.stop();
+	});
 });
 
 async function createTrack(id: string): Promise<Track> {

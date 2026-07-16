@@ -308,6 +308,30 @@ function createStudioApp() {
 			next(error);
 		}
 	});
+	app.post('/api/broadcast/queue-next', (request, response, next) => {
+		try {
+			if (!isDirectSongsActive()) {
+				response.status(409).type('text/plain').send('Direct songs must be on air before queueing a song next.');
+				return;
+			}
+
+			const trackId = typeof request.body?.trackId === 'string' ? request.body.trackId.trim() : '';
+			const track = trackId ? library.getTrack(trackId) : null;
+			if (!track?.cacheReady) {
+				response.status(400).type('text/plain').send('Choose a prepared song from the broadcast library.');
+				return;
+			}
+
+			const queue = playout.queueNext(track);
+			response.json({
+				...currentStatus(),
+				queueTrackIds: queue.map((candidate) => candidate.id),
+				nowPlaying
+			});
+		} catch (error) {
+			next(error);
+		}
+	});
 	app.post('/api/broadcast/skip', (_request, response) => {
 		playout.skip();
 		response.json(currentStatus());

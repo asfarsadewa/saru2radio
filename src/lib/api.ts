@@ -1,5 +1,6 @@
 import type {
 	AiDjAction,
+	BroadcastQueueStatus,
 	BroadcastStatus,
 	LibraryState,
 	ListenerMessage,
@@ -93,6 +94,13 @@ export function updateBroadcastQueue(trackIds: string[]): Promise<BroadcastStatu
 	return requestJson<BroadcastStatus>('/api/broadcast/queue', {
 		method: 'POST',
 		body: JSON.stringify({ trackIds })
+	});
+}
+
+export function queueBroadcastNext(trackId: string): Promise<BroadcastQueueStatus> {
+	return requestJson<BroadcastQueueStatus>('/api/broadcast/queue-next', {
+		method: 'POST',
+		body: JSON.stringify({ trackId })
 	});
 }
 

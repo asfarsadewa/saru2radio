@@ -45,6 +45,32 @@ export function cueTrackInQueue<T extends QueueTrack>(
 	return rotateQueueToTrack(containsTrack ? reconciled : [track, ...reconciled], track.id);
 }
 
+export function cueTrackNextInQueue<T extends QueueTrack>(
+	track: T,
+	tracks: T[],
+	queue: T[],
+	currentTrackId: string | null | undefined,
+	ordered: boolean,
+	random = Math.random
+): T[] {
+	const reconciled = reconcileQueueWithTracks(queue, tracks, ordered, random);
+	if (!currentTrackId || track.id === currentTrackId) {
+		return reconciled;
+	}
+
+	const withoutTrack = reconciled.filter((candidate) => candidate.id !== track.id);
+	const currentIndex = withoutTrack.findIndex((candidate) => candidate.id === currentTrackId);
+	if (currentIndex < 0) {
+		return reconciled;
+	}
+
+	return [
+		...withoutTrack.slice(0, currentIndex + 1),
+		track,
+		...withoutTrack.slice(currentIndex + 1)
+	];
+}
+
 export function rotateQueueToTrack<T extends QueueTrack>(queue: T[], trackId: string | null | undefined): T[] {
 	if (!trackId) {
 		return queue;

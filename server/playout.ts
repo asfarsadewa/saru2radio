@@ -108,6 +108,34 @@ export class DirectMp3Playout {
 		return [...this.queue];
 	}
 
+	queueNext(track: Track): Track[] {
+		if (!this.running) {
+			throw new Error('Direct song playout is not running.');
+		}
+
+		const currentTrack = this.currentTrack();
+		if (!currentTrack) {
+			throw new Error('There is no current song to queue after.');
+		}
+		if (track.id === currentTrack.id) {
+			return this.getQueue();
+		}
+
+		const withoutTrack = this.queue.filter((candidate) => candidate.id !== track.id);
+		const currentIndex = withoutTrack.findIndex((candidate) => candidate.id === currentTrack.id);
+		if (currentIndex < 0) {
+			throw new Error('The current song is no longer in the broadcast queue.');
+		}
+
+		this.queue = [
+			...withoutTrack.slice(0, currentIndex + 1),
+			track,
+			...withoutTrack.slice(currentIndex + 1)
+		];
+		this.currentIndex = currentIndex;
+		return this.getQueue();
+	}
+
 	pause(): void {
 		if (!this.running || this.paused) {
 			return;

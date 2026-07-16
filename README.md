@@ -176,7 +176,7 @@ In the Studio, use the original folder that contains `.saru2radio-cache` when pr
 6. Keep **Direct songs** selected for normal playback.
 7. Click **ON AIR**.
 8. Share the listener URL, or start the tunnel if configured.
-9. Use **Skip**, **Shuffle/Ordered**, or click a ready track for ad-hoc switching.
+9. Use **Skip**, **Shuffle/Ordered**, click a ready track to play it now, or use its **Next** control to place it immediately after the current song.
 10. Hold the mic button for a direct talk break. In direct mode the song pauses while the mic break is live.
 10. Click **OFF AIR** when finished.
 
@@ -185,6 +185,8 @@ For a voice-only program, keep **Direct songs** selected, switch the Direct subm
 ### Direct Song Switching
 
 Clicking a ready song while on air in direct mode replaces the active queue without reconnecting the Icecast source. This avoids dropping the listener stream during ad-hoc song changes.
+
+The **Next** control updates the queue without interrupting the current song. It is available while a song program is on air, and the selected row stays marked **Queued** until it becomes the current song.
 
 ### Microphone Controls
 

@@ -3,6 +3,7 @@
 	import {
 		Bot,
 		FolderOpen,
+		ListPlus,
 		ListMusic,
 		MessageSquare,
 		Mic,
@@ -32,6 +33,7 @@
 		getTunnel,
 		pickFolder,
 		playBroadcastNow,
+		queueBroadcastNext,
 		inspectPreparation,
 		scanLibrary,
 		skipBroadcast,
@@ -45,7 +47,13 @@
 		updateStudioState
 	} from '../lib/api';
 	import { StudioEngine, type MicCaptureState, type MicColorMode } from '../lib/audio/studioEngine';
-	import { createPlaybackQueue, cueTrackInQueue, reconcileQueueWithTracks, rotateQueueToTrack } from '../lib/queue';
+	import {
+		createPlaybackQueue,
+		cueTrackInQueue,
+		cueTrackNextInQueue,
+		reconcileQueueWithTracks,
+		rotateQueueToTrack
+	} from '../lib/queue';
 	import type {
 		AiDjAction,
 		BroadcastStatus,
@@ -102,6 +110,7 @@
 	let errorMessage = '';
 	let busyMessage = '';
 	let libraryScanning = false;
+	let queueUpdatePending = false;
 	let outputLevel = 0.05;
 	let micLevel = 0;
 	let micDevices: MediaDeviceInfo[] = [];
@@ -145,6 +154,7 @@
 	$: activeListenerLabel = `${activeListeners} ${activeListeners === 1 ? 'LISTENER' : 'LISTENERS'}`;
 	$: listenerUrl = tunnel.url ?? config?.listenerUrl ?? '';
 	$: displayQueue = rotateQueueToTrack(queue, nowPlaying?.trackId);
+	$: nextTrackId = nowPlaying?.trackId ? displayQueue[1]?.id ?? null : null;
 	$: levelStyle = `--level: ${outputLevel.toFixed(3)};`;
 	$: micOpen = micHeld || micLatched;
 	$: micLevelStyle = `--mic-level: ${micLevel.toFixed(3)};`;
@@ -1027,6 +1037,72 @@
 		}
 	}
 
+	async function playTrackNext(track: Track) {
+		if (!canQueueTrackNext(track) || !nowPlaying?.trackId) {
+			return;
+		}
+
+		errorMessage = '';
+		const previousQueue = queue;
+		queue = cueTrackNextInQueue(track, currentReadyTracks(), queue, nowPlaying.trackId, ordered);
+		queueUpdatePending = true;
+		try {
+			if (directSongsOnAir) {
+				const nextStatus = await queueBroadcastNext(track.id);
+				const tracksById = new Map(currentReadyTracks().map((candidate) => [candidate.id, candidate]));
+				queue = nextStatus.queueTrackIds
+					.map((trackId) => tracksById.get(trackId))
+					.filter((candidate): candidate is Track => Boolean(candidate));
+				nowPlaying = nextStatus.nowPlaying;
+				status = nextStatus;
+			} else if (mixerOnAir) {
+				engine.setQueue(queue);
+			} else {
+				queue = previousQueue;
+			}
+		} catch (error) {
+			queue = previousQueue;
+			setError(error);
+		} finally {
+			queueUpdatePending = false;
+		}
+	}
+
+	function canQueueTrackNext(track: Track): boolean {
+		return (
+			track.cacheReady &&
+			onAir &&
+			!voiceProgramOnAir &&
+			!directProgramSwitching &&
+			!queueUpdatePending &&
+			Boolean(nowPlaying?.trackId) &&
+			queue.some((candidate) => candidate.id === nowPlaying?.trackId) &&
+			nowPlaying?.trackId !== track.id
+		);
+	}
+
+	function queueNextTitle(track: Track): string {
+		if (!track.cacheReady) {
+			return 'Prepare this song before queueing it';
+		}
+		if (!onAir) {
+			return 'Go on air to queue this song next';
+		}
+		if (voiceProgramOnAir) {
+			return 'Play next is unavailable during a voice program';
+		}
+		if (directProgramSwitching || queueUpdatePending) {
+			return 'Wait for the current program change to finish';
+		}
+		if (!nowPlaying?.trackId || !queue.some((candidate) => candidate.id === nowPlaying?.trackId)) {
+			return 'Waiting for the current song';
+		}
+		if (nowPlaying.trackId === track.id) {
+			return 'This song is already playing';
+		}
+		return 'Play next';
+	}
+
 	async function toggleOrderMode() {
 		const previousOrdered = ordered;
 		const previousQueue = queue;
@@ -1299,24 +1375,42 @@
 
 			<div class="track-list" aria-label="Track list">
 				{#each library.tracks as track (track.id)}
-					<button
+					<div
 						class:active={nowPlaying?.trackId === track.id}
 						class:ready={track.cacheReady}
 						class:error={Boolean(track.error)}
 						class="track-row"
-						type="button"
-						disabled={!track.cacheReady || voiceProgramOnAir || directProgramSwitching}
-						on:click={() => playTrack(track)}
 					>
-						<div>
-							<strong>{track.title}</strong>
-							<span>{track.artist}</span>
-							{#if track.error}
-								<em>{track.error}</em>
-							{/if}
-						</div>
-						<time>{formatDuration(track.duration)}</time>
-					</button>
+						<button
+							class="track-play-button"
+							type="button"
+							disabled={!track.cacheReady || voiceProgramOnAir || directProgramSwitching}
+							aria-label={`Play ${track.title} now`}
+							title="Play now"
+							on:click={() => playTrack(track)}
+						>
+							<div>
+								<strong>{track.title}</strong>
+								<span>{track.artist}</span>
+								{#if track.error}
+									<em>{track.error}</em>
+								{/if}
+							</div>
+							<time>{formatDuration(track.duration)}</time>
+						</button>
+						<button
+							class:queued={nextTrackId === track.id}
+							class="queue-next-button"
+							type="button"
+							disabled={!canQueueTrackNext(track)}
+							aria-label={`Play ${track.title} next`}
+							title={queueNextTitle(track)}
+							on:click={() => playTrackNext(track)}
+						>
+							<ListPlus />
+							{nextTrackId === track.id ? 'Queued' : 'Next'}
+						</button>
+					</div>
 				{/each}
 				{#if library.tracks.length === 0}
 					<p class="empty-note">Choose a broadcast folder and scan local MP3 files.</p>
@@ -1805,15 +1899,14 @@
 	.track-row {
 		display: grid;
 		grid-template-columns: minmax(0, 1fr) auto;
-		gap: 12px;
+		gap: 0;
 		width: 100%;
-		padding: 9px;
 		border: 1px solid var(--line);
 		border-radius: 4px;
 		background: rgba(255, 255, 255, 0.35);
 		color: var(--ink);
 		opacity: 0.58;
-		text-align: left;
+		overflow: hidden;
 	}
 
 	.track-row.ready {
@@ -1830,22 +1923,39 @@
 		opacity: 1;
 	}
 
-	.track-row strong,
-	.track-row span,
-	.track-row em {
+	.track-play-button {
+		display: grid;
+		grid-template-columns: minmax(0, 1fr) auto;
+		gap: 12px;
+		min-width: 0;
+		padding: 9px;
+		border: 0;
+		border-radius: 0;
+		background: transparent;
+		color: inherit;
+		text-align: left;
+	}
+
+	.track-play-button:hover:not(:disabled) {
+		background: rgba(31, 118, 108, 0.05);
+	}
+
+	.track-play-button strong,
+	.track-play-button span,
+	.track-play-button em {
 		display: block;
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
 	}
 
-	.track-row strong {
+	.track-play-button strong {
 		font-size: 12px;
 	}
 
-	.track-row span,
-	.track-row em,
-	.track-row time,
+	.track-play-button span,
+	.track-play-button em,
+	.track-play-button time,
 	.empty-note,
 	.facade p,
 	.now p {
@@ -1853,10 +1963,43 @@
 		font-size: 11px;
 	}
 
-	.track-row em {
+	.track-play-button em {
 		margin-top: 3px;
 		color: var(--signal);
 		font-style: normal;
+	}
+
+	.queue-next-button {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		gap: 4px;
+		min-width: 66px;
+		padding: 6px 8px;
+		border: 0;
+		border-left: 1px solid var(--line);
+		border-radius: 0;
+		background: rgba(20, 19, 17, 0.025);
+		color: var(--ink-dim);
+		font-size: 9px;
+		font-weight: 800;
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
+	}
+
+	.queue-next-button:hover:not(:disabled),
+	.queue-next-button.queued {
+		background: var(--green);
+		color: var(--paper);
+	}
+
+	.queue-next-button:disabled {
+		opacity: 0.34;
+	}
+
+	.queue-next-button :global(svg) {
+		width: 13px;
+		height: 13px;
 	}
 
 	.dial {

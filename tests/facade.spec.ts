@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test';
 
-const STUDIO_URL = `http://127.0.0.1:${process.env.STUDIO_PORT ?? 8011}`;
-const PUBLIC_URL = `http://127.0.0.1:${process.env.PUBLIC_PORT ?? 8012}`;
+const STUDIO_URL = `http://127.0.0.1:${process.env.TEST_STUDIO_PORT ?? process.env.STUDIO_PORT ?? 18_011}`;
+const PUBLIC_URL = `http://127.0.0.1:${process.env.TEST_PUBLIC_PORT ?? process.env.PUBLIC_PORT ?? 18_012}`;
 
 test('studio dashboard renders local booth controls', async ({ page, request }) => {
 	await page.goto(`${STUDIO_URL}/`);
@@ -22,6 +22,86 @@ test('studio dashboard renders local booth controls', async ({ page, request }) 
 	expect(Array.isArray(await aiDjActionsResponse.json())).toBe(true);
 	const clearAiDjActionsResponse = await request.delete(`${STUDIO_URL}/api/ai-dj/actions`);
 	expect(clearAiDjActionsResponse.ok()).toBe(true);
+});
+
+test('human DJ can queue a ready song directly after the current song', async ({ page }) => {
+	const status = {
+		onAir: true,
+		streamUrl: '',
+		stationName: 'saru2radio',
+		startedAt: '2026-07-16T12:00:00.000Z',
+		icecastUrl: '',
+		listenerUrl: '',
+		tunnelUrl: null,
+		sourceConnected: true,
+		activeListeners: 0
+	};
+	const nowPlaying = {
+		trackId: 'current',
+		title: 'Current Song',
+		artist: 'Test Artist',
+		startedAt: '2026-07-16T12:00:00.000Z',
+		duration: 180
+	};
+	const tracks = ['current', 'middle', 'requested'].map((id, index) => ({
+		id,
+		sourcePath: `C:\\Music\\${id}.mp3`,
+		playPath: `C:\\Music\\.saru2radio-cache\\tracks\\${id}.mp3`,
+		fileName: `${id}.mp3`,
+		title: index === 0 ? 'Current Song' : index === 1 ? 'Middle Song' : 'Night Signal',
+		artist: 'Test Artist',
+		duration: 180,
+		size: 1024,
+		mtimeMs: 1,
+		cachePath: `C:\\Music\\.saru2radio-cache\\tracks\\${id}.mp3`,
+		cacheReady: true,
+		cacheStale: false
+	}));
+	let queuedTrackIds: string[] = [];
+
+	await page.route(`${STUDIO_URL}/api/status`, (route) => route.fulfill({ json: status }));
+	await page.route(`${STUDIO_URL}/api/library`, (route) =>
+		route.fulfill({
+			json: {
+				directory: 'C:\\Music',
+				tracks,
+				preparing: false,
+				lastScanAt: '2026-07-16T12:00:00.000Z',
+				recursive: false,
+				sourceKind: 'cache-manifest'
+			}
+		})
+	);
+	await page.route(`${STUDIO_URL}/api/now-playing`, (route) =>
+		route.fulfill({ json: nowPlaying })
+	);
+	await page.route(`${STUDIO_URL}/api/studio-state`, (route) =>
+		route.fulfill({
+			json: {
+				broadcastDirectory: 'C:\\Music',
+				broadcastRecursive: false,
+				ordered: true,
+				prepDirectory: 'C:\\Music',
+				updatedAt: '2026-07-16T12:00:00.000Z'
+			}
+		})
+	);
+	await page.route(`${STUDIO_URL}/api/broadcast/queue-next`, async (route) => {
+		expect(route.request().postDataJSON()).toEqual({ trackId: 'requested' });
+		queuedTrackIds = ['current', 'requested', 'middle'];
+		await route.fulfill({ json: { ...status, queueTrackIds: queuedTrackIds, nowPlaying } });
+	});
+
+	await page.goto(`${STUDIO_URL}/`);
+
+	await expect(page.getByRole('button', { name: 'Play Current Song next' })).toBeDisabled();
+	const nextButton = page.getByRole('button', { name: 'Play Night Signal next' });
+	await expect(nextButton).toBeEnabled();
+	await nextButton.click();
+
+	await expect.poll(() => queuedTrackIds).toEqual(['current', 'requested', 'middle']);
+	await expect(nextButton).toContainText('Queued');
+	await expect(page.locator('.queue-items p').nth(1)).toHaveText('Night Signal');
 });
 
 test('public facade renders listener page and hides studio API', async ({ page, request }) => {

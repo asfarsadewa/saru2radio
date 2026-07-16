@@ -18,6 +18,11 @@ export type NowPlaying = {
 	duration: number | null;
 };
 
+export type BroadcastQueueStatus = BroadcastStatus & {
+	queueTrackIds: string[];
+	nowPlaying: NowPlaying;
+};
+
 export type ListenerMessage = {
 	id: string;
 	name: string;
