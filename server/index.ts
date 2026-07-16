@@ -18,6 +18,7 @@ import { LibraryManager, resolveRadioToolPath } from './library.js';
 import { ActiveListenerCounter } from './listener-count.js';
 import { DIST_DIR } from './paths.js';
 import { ListenerMessageStore, ListenerMessageValidationError } from './listener-messages.js';
+import { feedbackForAiDjAction, ListenerFeedbackStore } from './listener-feedback.js';
 import { DirectMp3Playout } from './playout.js';
 import { PreparationBusyError, PreparationManager } from './preparation.js';
 import {
@@ -60,6 +61,7 @@ const library = new LibraryManager(radioToolPath);
 const preparation = new PreparationManager(radioToolPath);
 const studioState = new StudioStateStore();
 const listenerMessages = new ListenerMessageStore();
+const listenerFeedback = new ListenerFeedbackStore();
 const aiDjActions = new AiDjActionStore();
 const activeListeners = new ActiveListenerCounter();
 const browserSourceSessions = new BrowserSourceSessionGuard();
@@ -155,9 +157,11 @@ function createStudioApp() {
 	app.get('/api/status', (_request, response) => response.json(currentStatus()));
 	app.get('/api/listener-messages', (_request, response) => response.json(listenerMessages.list()));
 	app.delete('/api/listener-messages/:id', (request, response) => {
+		listenerFeedback.delete(request.params.id);
 		response.json(listenerMessages.delete(request.params.id));
 	});
 	app.delete('/api/listener-messages', (_request, response) => {
+		listenerFeedback.clear();
 		response.json(listenerMessages.clear());
 	});
 	app.get('/api/ai-dj/actions', (_request, response) => response.json(aiDjActions.list()));
@@ -396,12 +400,14 @@ function createPublicApp() {
 
 			try {
 				const listenerMessage = listenerMessages.create(request.body ?? {});
+				const feedbackToken = listenerFeedback.issue(listenerMessage.id);
 				try {
 					aiDj.enqueue(listenerMessage);
 				} catch (error) {
 					console.error(`[ai-dj] ${error instanceof Error ? error.message : error}`);
 				}
-				response.status(201).json(listenerMessage);
+				response.set('cache-control', 'no-store');
+				response.status(201).json({ ...listenerMessage, feedbackToken });
 			} catch (error) {
 				if (error instanceof ListenerMessageValidationError) {
 					response.status(400).type('text/plain').send(error.message);
@@ -411,6 +417,16 @@ function createPublicApp() {
 			}
 		}
 	);
+	app.get('/requests/:id/feedback', (request, response) => {
+		const token = request.get('x-saru2radio-request-token') ?? '';
+		if (!listenerFeedback.authorize(request.params.id, token)) {
+			response.status(404).type('text/plain').send('Not found');
+			return;
+		}
+
+		response.set('cache-control', 'no-store');
+		response.json(feedbackForAiDjAction(aiDjActions.findByRequestId(request.params.id)));
+	});
 	app.get('/live.mp3', (request, response) => proxyLiveStream(request, response, { countActiveListener: true }));
 	app.use((_request, response) => response.status(404).type('text/plain').send('Not found'));
 	return app;

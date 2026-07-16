@@ -245,6 +245,34 @@ describe('AiDjRequestAgent', () => {
 		}
 	});
 
+	it('still classifies non-request chatter when the ready library is empty', async () => {
+		const store = new AiDjActionStore();
+		const agent = createAiDjAgent({
+			actions: store,
+			client: fakeClient({
+				decision: 'not_song_request',
+				trackId: '',
+				artist: '',
+				confidence: 0.98,
+				reason: 'The listener is only commenting.'
+			}),
+			model: 'gpt-5.6',
+			getReadyTracks: () => [],
+			isDirectSongsActive: () => true,
+			playNow: async () => {
+				throw new Error('Should not play non-request chatter.');
+			}
+		});
+
+		agent.enqueue(createMessage('Great show tonight!'));
+		await agent.waitForIdle();
+
+		expect(store.list()[0]).toMatchObject({
+			status: 'ignored_not_song',
+			decision: 'not_song_request'
+		});
+	});
+
 	it('records disabled when no OpenAI key or client is configured', async () => {
 		const store = new AiDjActionStore();
 		const agent = createAiDjAgent({

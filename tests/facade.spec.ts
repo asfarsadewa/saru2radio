@@ -133,3 +133,71 @@ test('public facade renders listener page and hides studio API', async ({ page, 
 	}
 	expect(status.icecastUrl).toBe('');
 });
+
+test('listener receives a private unavailable-song flash and can request again', async ({ page }) => {
+	const status = {
+		onAir: true,
+		streamUrl: `${PUBLIC_URL}/live.mp3`,
+		stationName: 'saru2radio',
+		startedAt: '2026-07-16T12:00:00.000Z',
+		icecastUrl: '',
+		listenerUrl: PUBLIC_URL,
+		tunnelUrl: null,
+		sourceConnected: true,
+		activeListeners: 1
+	};
+	let submittedRequests = 0;
+	let feedbackChecks = 0;
+
+	await page.route(`${PUBLIC_URL}/status.json`, (route) => route.fulfill({ json: status }));
+	await page.route(`${PUBLIC_URL}/now-playing.json`, (route) =>
+		route.fulfill({
+			json: {
+				trackId: 'current',
+				title: 'Current Song',
+				artist: 'Test Artist',
+				startedAt: '2026-07-16T12:00:00.000Z',
+				duration: 180
+			}
+		})
+	);
+	await page.route(`${PUBLIC_URL}/requests`, async (route) => {
+		submittedRequests += 1;
+		const requestId = `request-${submittedRequests}`;
+		await route.fulfill({
+			status: 201,
+			json: {
+				id: requestId,
+				name: 'Listener',
+				message: submittedRequests === 1 ? 'Play Missing Song' : 'Play Another Song',
+				receivedAt: '2026-07-16T12:00:00.000Z',
+				feedbackToken: `token-${submittedRequests}`
+			}
+		});
+	});
+	await page.route(`${PUBLIC_URL}/requests/request-1/feedback`, async (route) => {
+		expect(route.request().headers()['x-saru2radio-request-token']).toBe('token-1');
+		feedbackChecks += 1;
+		await route.fulfill({
+			json:
+				feedbackChecks === 1
+					? { status: 'pending', message: '' }
+					: { status: 'unavailable', message: "That song isn't in our library. Try another request." }
+		});
+	});
+	await page.route(`${PUBLIC_URL}/requests/request-2/feedback`, (route) =>
+		route.fulfill({ json: { status: 'complete', message: '' } })
+	);
+
+	await page.goto(`${PUBLIC_URL}/`);
+	await page.getByLabel('Your name').fill('Listener');
+	await page.getByLabel('Song request or message').fill('Play Missing Song');
+	await page.getByRole('button', { name: 'Send' }).click();
+
+	await expect(page.getByLabel('Song request or message')).toBeEnabled();
+	await expect(page.getByRole('status')).toContainText("That song isn't in our library. Try another request.");
+
+	await page.getByLabel('Song request or message').fill('Play Another Song');
+	await page.getByRole('button', { name: 'Send' }).click();
+	await expect.poll(() => submittedRequests).toBe(2);
+});

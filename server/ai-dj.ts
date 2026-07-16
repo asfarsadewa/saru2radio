@@ -82,6 +82,11 @@ export class AiDjActionStore {
 		return this.actions.map((action) => ({ ...action }));
 	}
 
+	findByRequestId(requestId: string): AiDjAction | null {
+		const action = this.actions.find((candidate) => candidate.requestId === requestId);
+		return action ? { ...action } : null;
+	}
+
 	start(message: ListenerMessage, model: string): AiDjAction {
 		const now = this.now().toISOString();
 		const action: AiDjAction = {
@@ -166,16 +171,6 @@ export class AiDjRequestAgent {
 
 	private async process(message: ListenerMessage, actionId: string): Promise<void> {
 		const tracks = this.options.getReadyTracks();
-		if (tracks.length === 0) {
-			this.options.actions.update(actionId, {
-				status: 'ignored_unavailable',
-				decision: 'song_unavailable',
-				confidence: 1,
-				reason: 'No ready tracks are available for AI DJ to play.'
-			});
-			return;
-		}
-
 		const rawDecision = await classifyListenerRequest({
 			client: this.options.client,
 			model: this.options.model,

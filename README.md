@@ -215,7 +215,7 @@ The request line is disabled while the station is off air. When on air, listener
 - Name: required, max 40 characters.
 - Message/request: required, max 500 characters.
 
-Requests are one-way only. They are visible to the DJ in the studio's **Listener requests** panel and are kept only in memory for the current server session.
+Requests are visible to the DJ in the studio's **Listener requests** panel and are kept only in memory for the current server session. If the AI DJ confirms that a genuine song request is unavailable, the submitting listener page receives a short-lived private reply and remains ready for another request. Comments, chatter, ambiguous requests, and unsafe messages receive no automated reply.
 
 If `OPENAI_API_KEY` is set, the local studio server also runs an AI DJ request agent. The agent classifies accepted listener messages against the current ready local track list, logs every action in the studio's **AI DJ actions** panel, and only auto-plays a match while Direct songs is already active. A request for an artist without a song title randomly selects one ready local track by that artist. The listener facade never receives the OpenAI key and does not expose the action log.
 
@@ -235,9 +235,18 @@ Content-Type: application/json
 
 Responses:
 
-- `201` with the stored message when accepted.
+- `201` with the stored message and a short-lived `feedbackToken` when accepted.
 - `400` for invalid input.
 - `409` when the station is off air.
+
+The listener page uses the receipt to check only its own request:
+
+```http
+GET /requests/{request-id}/feedback
+X-Saru2radio-Request-Token: {feedback-token}
+```
+
+The response status is `pending`, `unavailable`, or `complete`. Invalid, expired, or mismatched tokens return `404`; the endpoint never exposes the DJ action log or another listener's request.
 
 Studio-only routes:
 

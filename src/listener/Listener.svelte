@@ -1,7 +1,11 @@
 <script lang="ts">
 	import { onDestroy, onMount } from 'svelte';
-	import { Pause, Play, Radio, Send } from '@lucide/svelte';
-	import type { BroadcastStatus, NowPlaying } from '../lib/types';
+	import { CircleAlert, Pause, Play, Radio, Send } from '@lucide/svelte';
+	import type { BroadcastStatus, ListenerRequestFeedback, ListenerRequestReceipt, NowPlaying } from '../lib/types';
+
+	const FEEDBACK_POLL_MS = 750;
+	const FEEDBACK_MAX_ATTEMPTS = 160;
+	const FEEDBACK_FLASH_MS = 7000;
 
 	let status: BroadcastStatus | null = null;
 	let nowPlaying: NowPlaying | null = null;
@@ -12,7 +16,11 @@
 	let requestMessage = '';
 	let requestStatus = '';
 	let requestSending = false;
+	let requestFlash = '';
 	let pollTimer: number | undefined;
+	let requestFlashTimer: number | undefined;
+	let destroyed = false;
+	const feedbackTimers = new Set<number>();
 
 	$: onAir = Boolean(status?.onAir);
 	$: requestDisabled = !onAir || requestSending;
@@ -24,9 +32,17 @@
 	});
 
 	onDestroy(() => {
+		destroyed = true;
 		if (pollTimer) {
 			window.clearInterval(pollTimer);
 		}
+		if (requestFlashTimer) {
+			window.clearTimeout(requestFlashTimer);
+		}
+		for (const timer of feedbackTimers) {
+			window.clearTimeout(timer);
+		}
+		feedbackTimers.clear();
 	});
 
 	async function refresh() {
@@ -86,14 +102,74 @@
 				throw new Error((await response.text()) || 'Could not send request.');
 			}
 
+			const receipt = (await response.json()) as ListenerRequestReceipt;
 			requestName = name;
 			requestMessage = '';
 			requestStatus = 'Request sent to the booth.';
+			if (receipt.id && receipt.feedbackToken) {
+				void pollRequestFeedback(receipt.id, receipt.feedbackToken);
+			}
 		} catch (error) {
 			requestStatus = error instanceof Error ? error.message : 'Could not send request.';
 		} finally {
 			requestSending = false;
 		}
+	}
+
+	async function pollRequestFeedback(requestId: string, token: string, attempt = 0) {
+		if (destroyed || attempt >= FEEDBACK_MAX_ATTEMPTS) {
+			return;
+		}
+
+		try {
+			const response = await fetch(`/requests/${encodeURIComponent(requestId)}/feedback`, {
+				cache: 'no-store',
+				headers: {
+					'x-saru2radio-request-token': token
+				}
+			});
+			if (response.status === 404) {
+				return;
+			}
+			if (!response.ok) {
+				scheduleFeedbackPoll(requestId, token, attempt + 1);
+				return;
+			}
+
+			const feedback = (await response.json()) as ListenerRequestFeedback;
+			if (feedback.status === 'unavailable') {
+				showRequestFlash(feedback.message || "That song isn't in our library. Try another request.");
+				return;
+			}
+			if (feedback.status === 'pending') {
+				scheduleFeedbackPoll(requestId, token, attempt + 1);
+			}
+		} catch {
+			scheduleFeedbackPoll(requestId, token, attempt + 1);
+		}
+	}
+
+	function scheduleFeedbackPoll(requestId: string, token: string, attempt: number) {
+		if (destroyed || attempt >= FEEDBACK_MAX_ATTEMPTS) {
+			return;
+		}
+
+		const timer = window.setTimeout(() => {
+			feedbackTimers.delete(timer);
+			void pollRequestFeedback(requestId, token, attempt);
+		}, FEEDBACK_POLL_MS);
+		feedbackTimers.add(timer);
+	}
+
+	function showRequestFlash(message: string) {
+		requestFlash = message;
+		if (requestFlashTimer) {
+			window.clearTimeout(requestFlashTimer);
+		}
+		requestFlashTimer = window.setTimeout(() => {
+			requestFlash = '';
+			requestFlashTimer = undefined;
+		}, FEEDBACK_FLASH_MS);
 	}
 </script>
 
@@ -163,6 +239,16 @@
 		<Radio />
 		<span>{errorMessage || (onAir ? 'Live from the local booth.' : 'The station starts when the DJ goes on air.')}</span>
 	</footer>
+
+	{#if requestFlash}
+		<aside class="request-flash" role="status" aria-live="polite">
+			<CircleAlert />
+			<div>
+				<span>request reply</span>
+				<p>{requestFlash}</p>
+			</div>
+		</aside>
+	{/if}
 
 	<audio bind:this={audio} on:pause={() => (playing = false)} on:ended={() => (playing = false)}></audio>
 </main>
@@ -289,6 +375,50 @@
 	.send-request :global(svg) {
 		width: 16px;
 		height: 16px;
+	}
+
+	.request-flash {
+		position: fixed;
+		z-index: 10;
+		left: 50%;
+		bottom: max(18px, env(safe-area-inset-bottom));
+		display: grid;
+		grid-template-columns: auto minmax(0, 1fr);
+		align-items: center;
+		gap: 11px;
+		width: min(480px, calc(100vw - 28px));
+		padding: 11px 13px;
+		transform: translateX(-50%);
+		border: 1px solid var(--line-strong);
+		border-top: 3px solid var(--amber);
+		border-radius: 4px;
+		background: var(--ink);
+		color: var(--paper);
+		box-shadow: 0 18px 48px -24px rgba(20, 19, 17, 0.88);
+		pointer-events: none;
+		animation: request-flash-in 180ms ease-out;
+	}
+
+	.request-flash :global(svg) {
+		width: 18px;
+		height: 18px;
+		color: var(--amber);
+	}
+
+	.request-flash span {
+		display: block;
+		margin-bottom: 2px;
+		color: rgba(244, 240, 233, 0.56);
+		font-size: 9px;
+		font-weight: 800;
+		letter-spacing: 0.14em;
+		text-transform: uppercase;
+	}
+
+	.request-flash p {
+		margin: 0;
+		font-size: 11px;
+		line-height: 1.4;
 	}
 
 	.dial-band {
@@ -508,6 +638,23 @@
 		}
 		to {
 			height: 22px;
+		}
+	}
+
+	@keyframes request-flash-in {
+		from {
+			opacity: 0;
+			transform: translate(-50%, 8px);
+		}
+		to {
+			opacity: 1;
+			transform: translate(-50%, 0);
+		}
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		.request-flash {
+			animation: none;
 		}
 	}
 </style>

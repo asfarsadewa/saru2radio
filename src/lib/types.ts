@@ -30,6 +30,15 @@ export type ListenerMessage = {
 	receivedAt: string;
 };
 
+export type ListenerRequestReceipt = ListenerMessage & {
+	feedbackToken: string;
+};
+
+export type ListenerRequestFeedback = {
+	status: 'pending' | 'unavailable' | 'complete';
+	message: string;
+};
+
 export type AiDjDecision =
 	| 'play'
 	| 'play_artist_random'
