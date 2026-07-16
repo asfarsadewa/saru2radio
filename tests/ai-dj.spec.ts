@@ -33,6 +33,7 @@ describe('AI DJ request classification', () => {
 		const payload = JSON.stringify(requests[0]);
 		expect(payload).toContain('Neon Rain');
 		expect(payload).toContain('track-1');
+		expect(payload).toContain('play_artist_random');
 		expect(payload).not.toContain('sourcePath');
 		expect(payload).not.toContain('cachePath');
 		expect(payload).not.toContain('C:\\\\music');
@@ -56,6 +57,59 @@ describe('AI DJ request classification', () => {
 				0.72
 			)
 		).toMatchObject({ decision: 'ambiguous', track: tracks[0] });
+	});
+
+	it('selects a random ready local track for an artist-only request', () => {
+		const unavailable = { ...createTrack('track-2', 'Hidden Signal', 'Adi'), cacheReady: false };
+		const tracks = [
+			createTrack('track-1', 'Neon Rain', 'Adi'),
+			unavailable,
+			createTrack('track-3', 'Midnight Echo', 'Adi'),
+			createTrack('track-4', 'Static Bloom', 'Saru')
+		];
+
+		expect(
+			validateAiDjDecision(
+				{
+					decision: 'play_artist_random',
+					trackId: '',
+					artist: ' adi ',
+					confidence: 0.96,
+					reason: 'Artist-only request.'
+				},
+				tracks,
+				0.72,
+				() => 0.5
+			)
+		).toMatchObject({
+			decision: 'play_artist_random',
+			track: tracks[2],
+			trackId: 'track-3',
+			artist: 'Adi'
+		});
+	});
+
+	it('rejects artist-only selections without a ready local artist match', () => {
+		const tracks = [createTrack('track-1', 'Neon Rain', 'Adi')];
+
+		expect(
+			validateAiDjDecision(
+				{
+					decision: 'play_artist_random',
+					trackId: '',
+					artist: 'Saru',
+					confidence: 0.96,
+					reason: 'Artist-only request.'
+				},
+				tracks,
+				0.72,
+				() => 0
+			)
+		).toMatchObject({
+			decision: 'song_unavailable',
+			track: null,
+			artist: 'Saru'
+		});
 	});
 });
 
@@ -96,6 +150,45 @@ describe('AiDjRequestAgent', () => {
 			decision: 'play',
 			matchedTrackId: 'track-1'
 		});
+	});
+
+	it('randomly plays one available track for an artist-only request', async () => {
+		const store = new AiDjActionStore();
+		const tracks = [
+			createTrack('track-1', 'Neon Rain', 'Adi'),
+			createTrack('track-2', 'Midnight Echo', 'Adi'),
+			createTrack('track-3', 'Static Bloom', 'Saru')
+		];
+		const played: string[] = [];
+		const agent = createAiDjAgent({
+			actions: store,
+			client: fakeClient({
+				decision: 'play_artist_random',
+				trackId: '',
+				artist: 'Adi',
+				confidence: 0.95,
+				reason: 'The listener requested Adi without a song title.'
+			}),
+			model: 'gpt-5.6',
+			getReadyTracks: () => tracks,
+			isDirectSongsActive: () => true,
+			playNow: async (track) => {
+				played.push(track.id);
+			},
+			random: () => 0.99
+		});
+
+		agent.enqueue(createMessage('Can you play something by Adi?'));
+		await agent.waitForIdle();
+
+		expect(played).toEqual(['track-2']);
+		expect(store.list()[0]).toMatchObject({
+			status: 'played_now',
+			decision: 'play_artist_random',
+			matchedTrackId: 'track-2',
+			matchedTrackArtist: 'Adi'
+		});
+		expect(store.list()[0].reason).toContain('Randomly selected Midnight Echo - Adi');
 	});
 
 	it('logs matched requests without playback outside Direct songs mode', async () => {

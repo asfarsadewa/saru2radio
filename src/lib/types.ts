@@ -30,7 +30,13 @@ export type ListenerMessage = {
 	receivedAt: string;
 };
 
-export type AiDjDecision = 'play' | 'not_song_request' | 'song_unavailable' | 'ambiguous' | 'unsafe_ignore';
+export type AiDjDecision =
+	| 'play'
+	| 'play_artist_random'
+	| 'not_song_request'
+	| 'song_unavailable'
+	| 'ambiguous'
+	| 'unsafe_ignore';
 
 export type AiDjActionStatus =
 	| 'analyzing'

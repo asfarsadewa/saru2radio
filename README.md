@@ -217,7 +217,7 @@ The request line is disabled while the station is off air. When on air, listener
 
 Requests are one-way only. They are visible to the DJ in the studio's **Listener requests** panel and are kept only in memory for the current server session.
 
-If `OPENAI_API_KEY` is set, the local studio server also runs an AI DJ request agent. The agent classifies accepted listener messages against the current ready local track list, logs every action in the studio's **AI DJ actions** panel, and only auto-plays a match while Direct songs is already active. The listener facade never receives the OpenAI key and does not expose the action log.
+If `OPENAI_API_KEY` is set, the local studio server also runs an AI DJ request agent. The agent classifies accepted listener messages against the current ready local track list, logs every action in the studio's **AI DJ actions** panel, and only auto-plays a match while Direct songs is already active. A request for an artist without a song title randomly selects one ready local track by that artist. The listener facade never receives the OpenAI key and does not expose the action log.
 
 ## Listener Request API
 
