@@ -43,12 +43,13 @@ test('human DJ can queue a ready song directly after the current song', async ({
 		startedAt: '2026-07-16T12:00:00.000Z',
 		duration: 180
 	};
-	const tracks = ['current', 'middle', 'requested'].map((id, index) => ({
+	const trackIds = ['current', 'middle', 'requested', ...Array.from({ length: 122 }, (_, index) => `extra-${index}`)];
+	const tracks = trackIds.map((id, index) => ({
 		id,
 		sourcePath: `C:\\Music\\${id}.mp3`,
 		playPath: `C:\\Music\\.saru2radio-cache\\tracks\\${id}.mp3`,
 		fileName: `${id}.mp3`,
-		title: index === 0 ? 'Current Song' : index === 1 ? 'Middle Song' : 'Night Signal',
+		title: index === 0 ? 'Current Song' : index === 1 ? 'Middle Song' : index === 2 ? 'Night Signal' : `Extra Song ${index}`,
 		artist: 'Test Artist',
 		duration: 180,
 		size: 1024,
@@ -94,6 +95,12 @@ test('human DJ can queue a ready song directly after the current song', async ({
 
 	await page.goto(`${STUDIO_URL}/`);
 
+	const trackList = page.getByLabel('Track list');
+	await expect(trackList.locator('.track-row')).toHaveCount(125);
+	await expect
+		.poll(() => trackList.locator('.track-row').first().evaluate((row) => row.getBoundingClientRect().height))
+		.toBeGreaterThan(36);
+	await expect.poll(() => trackList.evaluate((list) => list.scrollHeight > list.clientHeight)).toBe(true);
 	await expect(page.getByRole('button', { name: 'Play Current Song next' })).toBeDisabled();
 	const nextButton = page.getByRole('button', { name: 'Play Night Signal next' });
 	await expect(nextButton).toBeEnabled();
