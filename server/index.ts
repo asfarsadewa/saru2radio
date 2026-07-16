@@ -41,7 +41,7 @@ const BITRATE_KBPS = Number(process.env.RADIO_BITRATE_KBPS ?? 128);
 const LISTENER_REQUEST_LIMIT = Number(process.env.LISTENER_REQUEST_LIMIT ?? 6);
 const LISTENER_REQUEST_WINDOW_MS = Number(process.env.LISTENER_REQUEST_WINDOW_MS ?? 60_000);
 const AI_DJ_ENABLED = process.env.AI_DJ_ENABLED?.toLowerCase() !== 'false';
-const AI_DJ_MODEL = process.env.OPENAI_MODEL?.trim() || 'gpt-5.5';
+const AI_DJ_MODEL = process.env.OPENAI_MODEL?.trim() || 'gpt-5.6';
 const AI_DJ_MIN_CONFIDENCE = Number(process.env.AI_DJ_MIN_CONFIDENCE ?? 0.72);
 const SOURCE_RECONNECT_DELAY_MS = 500;
 

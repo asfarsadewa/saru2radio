@@ -23,7 +23,7 @@ describe('AI DJ request classification', () => {
 
 		const decision = await classifyListenerRequest({
 			client,
-			model: 'gpt-5.5',
+			model: 'gpt-5.6',
 			minConfidence: 0.72,
 			message: createMessage('Can you play Neon Rain?'),
 			tracks: [createTrack('track-1', 'Neon Rain', 'Adi')]
@@ -60,6 +60,18 @@ describe('AI DJ request classification', () => {
 });
 
 describe('AiDjRequestAgent', () => {
+	it('defaults new DJ agents to gpt-5.6', () => {
+		const agent = createAiDjAgent({
+			actions: new AiDjActionStore(),
+			client: null,
+			getReadyTracks: () => [],
+			isDirectSongsActive: () => false,
+			playNow: async () => {}
+		});
+
+		expect(agent.config().model).toBe('gpt-5.6');
+	});
+
 	it('plays a matched request immediately when Direct songs is active', async () => {
 		const store = new AiDjActionStore();
 		const tracks = [createTrack('track-1', 'Neon Rain', 'Adi'), createTrack('track-2', 'Static Bloom', 'Saru')];
@@ -67,7 +79,7 @@ describe('AiDjRequestAgent', () => {
 		const agent = createAiDjAgent({
 			actions: store,
 			client: fakeClient({ decision: 'play', trackId: 'track-1', confidence: 0.95, reason: 'Exact match.' }),
-			model: 'gpt-5.5',
+			model: 'gpt-5.6',
 			getReadyTracks: () => tracks,
 			isDirectSongsActive: () => true,
 			playNow: async (track) => {
@@ -93,7 +105,7 @@ describe('AiDjRequestAgent', () => {
 		const agent = createAiDjAgent({
 			actions: store,
 			client: fakeClient({ decision: 'play', trackId: 'track-1', confidence: 0.95, reason: 'Exact match.' }),
-			model: 'gpt-5.5',
+			model: 'gpt-5.6',
 			getReadyTracks: () => tracks,
 			isDirectSongsActive: () => false,
 			playNow: async (track) => {
@@ -125,7 +137,7 @@ describe('AiDjRequestAgent', () => {
 			const agent = createAiDjAgent({
 				actions: store,
 				client: fakeClient(decision),
-				model: 'gpt-5.5',
+				model: 'gpt-5.6',
 				getReadyTracks: () => [createTrack('track-1', 'Neon Rain', 'Adi')],
 				isDirectSongsActive: () => true,
 				playNow: async () => {
@@ -145,7 +157,7 @@ describe('AiDjRequestAgent', () => {
 		const agent = createAiDjAgent({
 			actions: store,
 			client: null,
-			model: 'gpt-5.5',
+			model: 'gpt-5.6',
 			getReadyTracks: () => [createTrack('track-1', 'Neon Rain', 'Adi')],
 			isDirectSongsActive: () => true,
 			playNow: async () => {
@@ -166,9 +178,9 @@ describe('AiDjRequestAgent', () => {
 describe('AiDjActionStore', () => {
 	it('keeps newest actions up to the cap and clears the log', () => {
 		const store = new AiDjActionStore(2);
-		const first = store.record(createMessage('first', 'one'), 'gpt-5.5', 'disabled', 'disabled');
-		const second = store.record(createMessage('second', 'two'), 'gpt-5.5', 'disabled', 'disabled');
-		const third = store.record(createMessage('third', 'three'), 'gpt-5.5', 'disabled', 'disabled');
+		const first = store.record(createMessage('first', 'one'), 'gpt-5.6', 'disabled', 'disabled');
+		const second = store.record(createMessage('second', 'two'), 'gpt-5.6', 'disabled', 'disabled');
+		const third = store.record(createMessage('third', 'three'), 'gpt-5.6', 'disabled', 'disabled');
 
 		expect(store.list().map((action) => action.requestMessage)).toEqual(['third', 'second']);
 		expect(store.list().map((action) => action.id)).not.toContain(first.id);

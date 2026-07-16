@@ -313,7 +313,7 @@ It also:
 | `RADIO_SOUND_EXE` | `.tools\make-radio-sound\make-radio-sound.exe` | Retro audio preparation tool path. |
 | `SARU2RADIO_TUNNEL_CONFIG` | `.saru2radio/cloudflare-named-tunnel.json` | Optional named Cloudflare tunnel config. |
 | `OPENAI_API_KEY` | unset | Local OpenAI key for the server-side AI DJ request agent. |
-| `OPENAI_MODEL` | `gpt-5.5` | AI DJ model used for request classification. |
+| `OPENAI_MODEL` | `gpt-5.6` | AI DJ model used for request classification. |
 | `AI_DJ_ENABLED` | `true` | Set to `false` to keep listener requests manual-only. |
 | `AI_DJ_MIN_CONFIDENCE` | `0.72` | Minimum model confidence required before AI DJ auto-plays a matched track. |
 

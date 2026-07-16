@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import OpenAI from 'openai';
 import type { AiDjAction, AiDjActionStatus, AiDjConfig, AiDjDecision, ListenerMessage, Track } from '../src/lib/types.js';
 
-const DEFAULT_MODEL = 'gpt-5.5';
+const DEFAULT_MODEL = 'gpt-5.6';
 const DEFAULT_MIN_CONFIDENCE = 0.72;
 const MAX_ACTIONS = 100;
 const MAX_REASON_CHARS = 220;
