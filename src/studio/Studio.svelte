@@ -80,13 +80,16 @@
 	};
 	let preparation: PreparationState = {
 		phase: 'idle',
+		scope: 'all',
 		directory: '',
 		recursive: false,
 		toolAvailable: false,
 		total: 0,
+		targetTotal: 0,
 		ready: 0,
 		pending: 0,
 		stale: 0,
+		deferred: 0,
 		completed: 0,
 		converted: 0,
 		skipped: 0,
@@ -190,17 +193,25 @@
 	$: micDetail = micMessage || micLabel || (voiceProgramOnAir ? 'Voice program standby.' : directOnAir ? 'Hold to pause songs and talk.' : 'Choose an input, then go on air.');
 	$: preparationActive = preparation.phase === 'scanning' || preparation.phase === 'preparing';
 	$: preparationMatchesInput = sameDirectory(preparation.directory, directoryInput);
-	$: preparationProgressMax = Math.max(1, preparation.total);
+	$: preparationPendingNow = onAir
+		? Math.max(0, preparation.pending - preparation.stale)
+		: preparation.pending;
+	$: preparationProgressMax = Math.max(1, preparation.targetTotal);
 	$: preparationButtonLabel =
 		preparationActive && preparation.currentTrack
 			? `${preparation.currentTrack.index}/${preparation.currentTrack.total}`
-			: preparationMatchesInput && preparation.pending > 0
-				? `Prepare ${preparation.pending}`
+			: preparationActive
+				? preparation.phase === 'scanning'
+					? 'Inspecting'
+					: 'Preparing'
+			: preparationMatchesInput && preparationPendingNow > 0
+				? `Prepare ${preparationPendingNow}`
+				: preparationMatchesInput && onAir && preparation.pending > 0
+					? 'Stale deferred'
 				: preparationMatchesInput && preparation.total > 0
 					? 'Prepared'
 					: 'Prepare';
 	$: preparationDisabled =
-		onAir ||
 		preparationActive ||
 		libraryScanning ||
 		!directoryInput.trim() ||
@@ -208,7 +219,7 @@
 		(preparationMatchesInput &&
 			(Boolean(preparation.error) ||
 				(preparation.phase !== 'idle' && preparation.total === 0) ||
-				(preparation.total > 0 && preparation.pending === 0)));
+				(preparation.total > 0 && preparationPendingNow === 0)));
 
 	onMount(async () => {
 		await refreshAll();
@@ -373,8 +384,7 @@
 		if (
 			preparation.phase !== 'completed' ||
 			!preparation.finishedAt ||
-			preparation.finishedAt === handledPreparationFinishedAt ||
-			Boolean(status?.onAir)
+			preparation.finishedAt === handledPreparationFinishedAt
 		) {
 			return;
 		}
@@ -388,7 +398,12 @@
 			directoryInput = library.directory;
 			libraryRecursive = preparation.recursive;
 			await updateStudioState({ broadcastRecursive: preparation.recursive });
-			buildQueue();
+			buildQueue(status, { preferServerQueue: false });
+			if (status?.directSongsActive && queue.length > 0) {
+				const nextStatus = await updateBroadcastQueue(queue.map((track) => track.id));
+				status = nextStatus;
+				syncServerQueue(nextStatus);
+			}
 		} catch (error) {
 			setError(error);
 		}
@@ -1389,7 +1404,7 @@
 						<strong>{preparation.ready}/{preparation.total}</strong>
 					</div>
 					{#if preparationActive}
-						<progress value={preparation.completed} max={preparationProgressMax}>{preparation.completed} of {preparation.total}</progress>
+						<progress value={preparation.completed} max={preparationProgressMax}>{preparation.completed} of {preparation.targetTotal}</progress>
 						<p title={preparation.currentTrack?.fileName ?? ''}>
 							{preparation.currentTrack
 								? `${preparation.currentTrack.index} of ${preparation.currentTrack.total} · ${preparation.currentTrack.fileName}`
@@ -1398,7 +1413,11 @@
 									: 'Starting processor…'}
 						</p>
 					{:else if preparation.phase === 'completed'}
-						<p>{preparation.converted} converted · {preparation.skipped} unchanged · {preparation.failed} failed</p>
+						<p>
+							{preparation.converted} converted · {preparation.skipped} unchanged · {preparation.failed} failed{preparation.deferred > 0
+								? ` · ${preparation.deferred} stale left for an off-air pass`
+								: ''}
+						</p>
 					{:else if preparation.phase === 'error'}
 						<p>{preparation.error}</p>
 					{:else}
@@ -1407,9 +1426,13 @@
 								? preparation.error
 								: preparation.total === 0
 									? 'No supported source tracks found.'
-									: preparation.pending === 0
+								: preparation.pending === 0
 								? 'All source tracks have fresh radio copies.'
-								: `${preparation.pending} ${preparation.pending === 1 ? 'track needs' : 'tracks need'} preparation${preparation.stale > 0 ? ` · ${preparation.stale} stale` : ''}.`}
+								: onAir && preparationPendingNow === 0
+									? `${preparation.stale} stale ${preparation.stale === 1 ? 'copy is' : 'copies are'} deferred until off air.`
+									: onAir && preparation.stale > 0
+										? `${preparationPendingNow} ${preparationPendingNow === 1 ? 'new track is' : 'new tracks are'} ready to prepare now · ${preparation.stale} stale deferred until off air.`
+										: `${preparation.pending} ${preparation.pending === 1 ? 'track needs' : 'tracks need'} preparation${preparation.stale > 0 ? ` · ${preparation.stale} stale` : ''}.`}
 						</p>
 					{/if}
 					{#if preparation.failures.length > 0}

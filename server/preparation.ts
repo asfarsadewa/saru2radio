@@ -9,6 +9,10 @@ import {
 
 type LibraryFactory = () => LibraryManager;
 
+export type PreparationStartOptions = ScanOptions & {
+	missingOnly?: boolean;
+};
+
 const ACTIVE_PHASES = new Set<PreparationState['phase']>(['scanning', 'preparing']);
 
 export class PreparationBusyError extends Error {}
@@ -65,7 +69,7 @@ export class PreparationManager {
 		}
 	}
 
-	start(directory: string, options: ScanOptions = {}): PreparationState {
+	start(directory: string, options: PreparationStartOptions = {}): PreparationState {
 		this.assertIdle();
 		if (!this.radioToolPath) {
 			throw new Error('make-radio-sound.exe was not found. Run `npm run setup:radio-sound` or set RADIO_SOUND_EXE.');
@@ -79,6 +83,7 @@ export class PreparationManager {
 		this.state = {
 			...emptyPreparationState(true),
 			phase: 'scanning',
+			scope: options.missingOnly ? 'missing-only' : 'all',
 			directory,
 			recursive: options.recursive ?? false,
 			startedAt: now,
@@ -95,28 +100,39 @@ export class PreparationManager {
 		return this.getState();
 	}
 
-	private async run(directory: string, options: ScanOptions): Promise<void> {
+	private async run(directory: string, options: PreparationStartOptions): Promise<void> {
 		try {
 			const manager = this.createLibrary();
 			const scanned = await manager.scan(directory, { recursive: options.recursive ?? false });
 			const inspected = inspectedState(scanned, true);
+			const selectedTrackIds = options.missingOnly
+				? scanned.tracks
+						.filter((track) => !track.cacheReady && !track.cacheStale)
+						.map((track) => track.id)
+				: undefined;
 			this.state = {
 				...inspected,
 				phase: 'preparing',
+				scope: options.missingOnly ? 'missing-only' : 'all',
+				targetTotal: selectedTrackIds?.length ?? scanned.tracks.length,
+				deferred: options.missingOnly ? inspected.stale : 0,
 				startedAt: this.state.startedAt,
 				updatedAt: new Date().toISOString()
 			};
 
-			const prepared = await manager.prepare(undefined, {
+			const prepared = await manager.prepare(selectedTrackIds, {
 				continueOnError: true,
 				onProgress: (progress) => this.updateProgress(progress)
 			});
 			const ready = prepared.tracks.filter((track) => track.cacheReady).length;
+			const stale = prepared.tracks.filter((track) => track.cacheStale).length;
 			this.state = {
 				...this.state,
 				phase: 'completed',
 				ready,
 				pending: prepared.tracks.length - ready,
+				stale,
+				deferred: options.missingOnly ? stale : 0,
 				currentTrack: null,
 				finishedAt: new Date().toISOString(),
 				updatedAt: new Date().toISOString()
@@ -206,13 +222,16 @@ export class PreparationManager {
 function emptyPreparationState(toolAvailable: boolean): PreparationState {
 	return {
 		phase: 'idle',
+		scope: 'all',
 		directory: '',
 		recursive: false,
 		toolAvailable,
 		total: 0,
+		targetTotal: 0,
 		ready: 0,
 		pending: 0,
 		stale: 0,
+		deferred: 0,
 		completed: 0,
 		converted: 0,
 		skipped: 0,

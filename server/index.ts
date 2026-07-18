@@ -244,13 +244,12 @@ function createStudioApp() {
 	});
 	app.post('/api/preparation/start', async (request, response, next) => {
 		try {
-			if (currentStatus().onAir) {
-				response.status(409).type('text/plain').send('Go off air before preparing radio copies.');
-				return;
-			}
 			const directory = String(request.body.directory ?? '');
 			const recursive = Boolean(request.body.recursive);
-			const state = preparation.start(directory, { recursive });
+			const state = preparation.start(directory, {
+				recursive,
+				missingOnly: currentStatus().onAir
+			});
 			await studioState.update({ prepDirectory: directory });
 			response.status(202).json(state);
 		} catch (error) {

@@ -167,7 +167,7 @@ export class LibraryManager {
 		}
 
 		this.state.preparing = true;
-		const selected = new Set(trackIds?.length ? trackIds : this.state.tracks.map((track) => track.id));
+		const selected = new Set(trackIds === undefined ? this.state.tracks.map((track) => track.id) : trackIds);
 		const selectedTracks = this.state.tracks.filter((track) => selected.has(track.id));
 		const manifest = await readManifest(this.state.directory);
 		const sourceTrackIds = new Set(this.state.tracks.map((track) => track.id));

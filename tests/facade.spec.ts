@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import type { PreparationState } from '../src/lib/types.js';
 
 const STUDIO_URL = `http://127.0.0.1:${process.env.TEST_STUDIO_PORT ?? process.env.STUDIO_PORT ?? 18_011}`;
 const PUBLIC_URL = `http://127.0.0.1:${process.env.TEST_PUBLIC_PORT ?? process.env.PUBLIC_PORT ?? 18_012}`;
@@ -154,6 +155,190 @@ test('Studio rebuilds and syncs the server queue while preserving human Next con
 		timeout: 5000
 	});
 	await expect(page.getByRole('button', { name: 'Play Middle Song next' })).toBeEnabled();
+});
+
+test('Studio prepares new tracks on air and merges them into the live queue', async ({ page }) => {
+	const directory = 'C:\\Music';
+	const startedAt = '2026-07-18T12:00:00.000Z';
+	const status = {
+		onAir: true,
+		streamUrl: '',
+		stationName: 'saru2radio',
+		startedAt,
+		icecastUrl: '',
+		listenerUrl: '',
+		tunnelUrl: null,
+		sourceConnected: true,
+		activeListeners: 0,
+		directSongsActive: true,
+		queueTrackIds: ['current', 'requested', 'existing']
+	};
+	const makeTrack = (id: string, title: string) => ({
+		id,
+		sourcePath: `${directory}\\${id}.mp3`,
+		playPath: `${directory}\\.saru2radio-cache\\tracks\\${id}.mp3`,
+		fileName: `${id}.mp3`,
+		title,
+		artist: 'Test Artist',
+		duration: 180,
+		size: 1024,
+		mtimeMs: 1,
+		cachePath: `${directory}\\.saru2radio-cache\\tracks\\${id}.mp3`,
+		cacheReady: true,
+		cacheStale: false
+	});
+	const initialTracks = [
+		makeTrack('current', 'Current Song'),
+		makeTrack('requested', 'Listener Request'),
+		makeTrack('existing', 'Existing Song')
+	];
+	const newTrack = makeTrack('new-track', 'Newly Prepared Song');
+	const readyPreparation: PreparationState = {
+		phase: 'ready',
+		scope: 'all',
+		directory,
+		recursive: false,
+		toolAvailable: true,
+		total: 4,
+		targetTotal: 0,
+		ready: 2,
+		pending: 2,
+		stale: 1,
+		deferred: 0,
+		completed: 0,
+		converted: 0,
+		skipped: 0,
+		failed: 0,
+		currentTrack: null,
+		failures: [],
+		startedAt: null,
+		finishedAt: null,
+		updatedAt: startedAt,
+		error: null
+	};
+	let preparation: PreparationState = readyPreparation;
+	let startBody: { directory: string; recursive: boolean } | null = null;
+	let rescanned = false;
+	let replacementQueue: string[] = [];
+
+	await page.route(`${STUDIO_URL}/api/config`, (route) =>
+		route.fulfill({
+			json: {
+				stationName: 'saru2radio',
+				studioUrl: STUDIO_URL,
+				listenerUrl: '',
+				icecastUrl: '',
+				mount: '/live.mp3',
+				bitrateKbps: 128,
+				radioToolPath: 'C:\\Tools\\make-radio-sound.exe',
+				cloudflaredAvailable: false,
+				aiDj: {
+					enabled: true,
+					configured: true,
+					model: 'gpt-5.6',
+					minConfidence: 0.72,
+					status: 'ready'
+				}
+			}
+		})
+	);
+	await page.route(`${STUDIO_URL}/api/status`, (route) => route.fulfill({ json: status }));
+	await page.route(`${STUDIO_URL}/api/now-playing`, (route) =>
+		route.fulfill({
+			json: {
+				trackId: 'current',
+				title: 'Current Song',
+				artist: 'Test Artist',
+				startedAt,
+				duration: 180
+			}
+		})
+	);
+	await page.route(`${STUDIO_URL}/api/studio-state`, (route) =>
+		route.fulfill({
+			json: {
+				broadcastDirectory: directory,
+				broadcastRecursive: false,
+				ordered: true,
+				prepDirectory: directory,
+				updatedAt: startedAt
+			}
+		})
+	);
+	await page.route(`${STUDIO_URL}/api/library`, (route) =>
+		route.fulfill({
+			json: {
+				directory,
+				tracks: initialTracks,
+				preparing: false,
+				lastScanAt: startedAt,
+				recursive: false,
+				sourceKind: 'cache-manifest'
+			}
+		})
+	);
+	await page.route(`${STUDIO_URL}/api/library/scan`, (route) => {
+		rescanned = true;
+		return route.fulfill({
+			json: {
+				directory,
+				tracks: [...initialTracks, newTrack],
+				preparing: false,
+				lastScanAt: startedAt,
+				recursive: false,
+				sourceKind: 'cache-manifest'
+			}
+		});
+	});
+	await page.route(`${STUDIO_URL}/api/preparation`, (route) => route.fulfill({ json: preparation }));
+	await page.route(`${STUDIO_URL}/api/preparation/start`, async (route) => {
+		startBody = route.request().postDataJSON() as { directory: string; recursive: boolean };
+		preparation = {
+			...readyPreparation,
+			phase: 'completed',
+			scope: 'missing-only',
+			targetTotal: 1,
+			ready: 3,
+			pending: 1,
+			stale: 1,
+			deferred: 1,
+			completed: 1,
+			converted: 1,
+			startedAt,
+			finishedAt: '2026-07-18T12:01:00.000Z'
+		};
+		await route.fulfill({
+			status: 202,
+			json: {
+				...readyPreparation,
+				phase: 'scanning',
+				scope: 'missing-only',
+				startedAt
+			}
+		});
+	});
+	await page.route(`${STUDIO_URL}/api/broadcast/queue`, async (route) => {
+		replacementQueue = (route.request().postDataJSON() as { trackIds: string[] }).trackIds;
+		await route.fulfill({
+			json: {
+				...status,
+				queueTrackIds: ['current', 'requested', 'existing', 'new-track']
+			}
+		});
+	});
+
+	await page.goto(`${STUDIO_URL}/`);
+	const prepareButton = page.getByRole('button', { name: 'Prepare 1' });
+	await expect(prepareButton).toBeEnabled();
+	await prepareButton.click();
+
+	await expect.poll(() => startBody).toEqual({ directory, recursive: false });
+	await expect.poll(() => rescanned).toBe(true);
+	await expect.poll(() => replacementQueue).toEqual(expect.arrayContaining(['new-track']));
+	await expect(page.getByText('4 tracks')).toBeVisible();
+	await expect(page.getByRole('button', { name: 'Stale deferred', exact: true })).toBeDisabled();
+	await expect(page.getByText('1 stale left for an off-air pass', { exact: false })).toBeVisible();
+	await expect(page.locator('.queue-items p').nth(1)).toHaveText('Listener Request');
 });
 
 test('public facade renders listener page and hides studio API', async ({ page, request }) => {

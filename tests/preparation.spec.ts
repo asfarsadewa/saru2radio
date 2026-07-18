@@ -116,6 +116,70 @@ describe('PreparationManager', () => {
 		}
 	});
 
+	it('prepares only missing copies on air and leaves stale copies untouched for an off-air pass', async () => {
+		const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'saru2radio-on-air-preparation-'));
+		const staleSource = path.join(directory, 'stale.mp3');
+		const missingSource = path.join(directory, 'missing.mp3');
+		const convertedInputs: string[] = [];
+		const createLibrary = () =>
+			new LibraryManager('fake-tool', async (_exePath, input, output) => {
+				convertedInputs.push(input);
+				await fs.writeFile(output, `radio-copy:${await fs.readFile(input, 'utf8')}`);
+			});
+		const manager = new PreparationManager('fake-tool', createLibrary);
+
+		try {
+			await fs.writeFile(staleSource, 'first-version');
+			manager.start(directory);
+			await manager.waitForCompletion();
+
+			const initiallyScanned = await createLibrary().scan(directory, { recursive: false });
+			const staleCachePath = initiallyScanned.tracks[0].cachePath;
+			expect(await fs.readFile(staleCachePath, 'utf8')).toBe('radio-copy:first-version');
+
+			await fs.writeFile(staleSource, 'changed-version-with-a-different-size');
+			await fs.writeFile(missingSource, 'new-track');
+
+			manager.start(directory, { missingOnly: true });
+			const onAirRun = await manager.waitForCompletion();
+
+			expect(onAirRun).toMatchObject({
+				phase: 'completed',
+				scope: 'missing-only',
+				total: 2,
+				targetTotal: 1,
+				ready: 1,
+				pending: 1,
+				stale: 1,
+				deferred: 1,
+				completed: 1,
+				converted: 1,
+				skipped: 0,
+				failed: 0
+			});
+			expect(convertedInputs).toEqual([staleSource, missingSource]);
+			expect(await fs.readFile(staleCachePath, 'utf8')).toBe('radio-copy:first-version');
+
+			manager.start(directory);
+			const offAirRun = await manager.waitForCompletion();
+			expect(offAirRun).toMatchObject({
+				phase: 'completed',
+				scope: 'all',
+				ready: 2,
+				pending: 0,
+				stale: 0,
+				deferred: 0,
+				converted: 1,
+				skipped: 1
+			});
+			expect(await fs.readFile(staleCachePath, 'utf8')).toBe(
+				'radio-copy:changed-version-with-a-different-size'
+			);
+		} finally {
+			await fs.rm(directory, { recursive: true, force: true });
+		}
+	});
+
 	it('rejects overlapping preparation jobs and missing local processor setup', async () => {
 		const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'saru2radio-preparation-busy-'));
 		const manager = new PreparationManager(

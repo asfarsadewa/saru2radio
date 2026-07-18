@@ -109,6 +109,7 @@ export type LibraryState = {
 };
 
 export type PreparationPhase = 'idle' | 'scanning' | 'ready' | 'preparing' | 'completed' | 'error';
+export type PreparationScope = 'all' | 'missing-only';
 
 export type PreparationFailure = {
 	trackId: string;
@@ -125,13 +126,16 @@ export type PreparationCurrentTrack = {
 
 export type PreparationState = {
 	phase: PreparationPhase;
+	scope: PreparationScope;
 	directory: string;
 	recursive: boolean;
 	toolAvailable: boolean;
 	total: number;
+	targetTotal: number;
 	ready: number;
 	pending: number;
 	stale: number;
+	deferred: number;
 	completed: number;
 	converted: number;
 	skipped: number;

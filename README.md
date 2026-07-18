@@ -134,7 +134,7 @@ From the Studio:
 3. Use **Prepare** to process only missing or stale tracks.
 4. Keep the Studio open while it reports progress. When preparation finishes, the prepared library is loaded automatically.
 
-Preparation is disabled while the station is on air. Source files are never modified; generated output stays under `.saru2radio-cache`.
+While the station is on air, **Prepare** safely processes only tracks that do not have a radio copy yet. Stale copies are deferred until the station is off air so playout never races a cache-file replacement. Completed copies are rescanned into the live queue without interrupting the current song or reserved requests. Source files are never modified; generated output stays under `.saru2radio-cache`.
 
 The equivalent local command is:
 

@@ -88,6 +88,25 @@ describe('LibraryManager', () => {
 		}
 	});
 
+	it('treats an empty track selection as no work', async () => {
+		const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'saru2radio-empty-selection-'));
+		let runnerCalled = false;
+
+		try {
+			await fs.writeFile(path.join(directory, 'original.mp3'), 'original-audio');
+			const manager = new LibraryManager('fake-tool', async () => {
+				runnerCalled = true;
+			});
+			await manager.scan(directory, { recursive: false });
+			const prepared = await manager.prepare([]);
+
+			expect(runnerCalled).toBe(false);
+			expect(prepared.tracks[0].cacheReady).toBe(false);
+		} finally {
+			await fs.rm(directory, { recursive: true, force: true });
+		}
+	});
+
 	it('can scan only the selected directory root for CLI preparation', async () => {
 		const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'saru2radio-library-'));
 
