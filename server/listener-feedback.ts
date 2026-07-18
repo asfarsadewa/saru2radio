@@ -85,7 +85,22 @@ export function feedbackForAiDjAction(action: AiDjAction | null): ListenerReques
 	if (action?.status === 'ignored_unavailable' && action.decision === 'song_unavailable') {
 		return { status: 'unavailable', message: UNAVAILABLE_MESSAGE };
 	}
+	if (action?.status === 'queued_next') {
+		return { status: 'accepted', message: `Your request is up next: ${feedbackTrackName(action)}.` };
+	}
+	if (action?.status === 'queued') {
+		return { status: 'accepted', message: `Your request was added to the queue: ${feedbackTrackName(action)}.` };
+	}
+	if (action?.status === 'already_playing' || action?.status === 'played_now') {
+		return { status: 'accepted', message: `Your request is playing now: ${feedbackTrackName(action)}.` };
+	}
 	return { status: 'complete', message: '' };
+}
+
+function feedbackTrackName(action: AiDjAction): string {
+	const title = action.matchedTrackTitle?.trim() || 'Requested song';
+	const artist = action.matchedTrackArtist?.trim();
+	return artist && artist !== 'Unknown artist' ? `${artist} — ${title}` : title;
 }
 
 function hashToken(token: string): Buffer {

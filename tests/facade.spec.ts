@@ -58,9 +58,17 @@ test('human DJ can queue a ready song directly after the current song', async ({
 		cacheReady: true,
 		cacheStale: false
 	}));
-	let queuedTrackIds: string[] = [];
+	let queuedTrackIds = [...trackIds];
 
-	await page.route(`${STUDIO_URL}/api/status`, (route) => route.fulfill({ json: status }));
+	await page.route(`${STUDIO_URL}/api/status`, (route) =>
+		route.fulfill({
+			json: {
+				...status,
+				directSongsActive: true,
+				queueTrackIds: queuedTrackIds
+			}
+		})
+	);
 	await page.route(`${STUDIO_URL}/api/library`, (route) =>
 		route.fulfill({
 			json: {
@@ -90,7 +98,14 @@ test('human DJ can queue a ready song directly after the current song', async ({
 	await page.route(`${STUDIO_URL}/api/broadcast/queue-next`, async (route) => {
 		expect(route.request().postDataJSON()).toEqual({ trackId: 'requested' });
 		queuedTrackIds = ['current', 'requested', 'middle'];
-		await route.fulfill({ json: { ...status, queueTrackIds: queuedTrackIds, nowPlaying } });
+		await route.fulfill({
+			json: {
+				...status,
+				directSongsActive: true,
+				queueTrackIds: queuedTrackIds,
+				nowPlaying
+			}
+		});
 	});
 
 	await page.goto(`${STUDIO_URL}/`);
@@ -141,7 +156,7 @@ test('public facade renders listener page and hides studio API', async ({ page, 
 	expect(status.icecastUrl).toBe('');
 });
 
-test('listener receives a private unavailable-song flash and can request again', async ({ page }) => {
+test('listener receives private AI DJ replies and can request again', async ({ page }) => {
 	const status = {
 		onAir: true,
 		streamUrl: `${PUBLIC_URL}/live.mp3`,
@@ -193,7 +208,12 @@ test('listener receives a private unavailable-song flash and can request again',
 		});
 	});
 	await page.route(`${PUBLIC_URL}/requests/request-2/feedback`, (route) =>
-		route.fulfill({ json: { status: 'complete', message: '' } })
+		route.fulfill({
+			json: {
+				status: 'accepted',
+				message: 'Your request is up next: Test Artist — Another Song.'
+			}
+		})
 	);
 
 	await page.goto(`${PUBLIC_URL}/`);
@@ -207,4 +227,7 @@ test('listener receives a private unavailable-song flash and can request again',
 	await page.getByLabel('Song request or message').fill('Play Another Song');
 	await page.getByRole('button', { name: 'Send' }).click();
 	await expect.poll(() => submittedRequests).toBe(2);
+	await expect(page.getByRole('status')).toContainText(
+		'Your request is up next: Test Artist — Another Song.'
+	);
 });

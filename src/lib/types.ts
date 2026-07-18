@@ -10,6 +10,11 @@ export type BroadcastStatus = {
 	activeListeners: number;
 };
 
+export type StudioBroadcastStatus = BroadcastStatus & {
+	directSongsActive: boolean;
+	queueTrackIds: string[];
+};
+
 export type NowPlaying = {
 	trackId: string | null;
 	title: string;
@@ -18,8 +23,7 @@ export type NowPlaying = {
 	duration: number | null;
 };
 
-export type BroadcastQueueStatus = BroadcastStatus & {
-	queueTrackIds: string[];
+export type BroadcastQueueStatus = StudioBroadcastStatus & {
 	nowPlaying: NowPlaying;
 };
 
@@ -35,7 +39,7 @@ export type ListenerRequestReceipt = ListenerMessage & {
 };
 
 export type ListenerRequestFeedback = {
-	status: 'pending' | 'unavailable' | 'complete';
+	status: 'pending' | 'accepted' | 'unavailable' | 'complete';
 	message: string;
 };
 
@@ -49,6 +53,9 @@ export type AiDjDecision =
 
 export type AiDjActionStatus =
 	| 'analyzing'
+	| 'queued_next'
+	| 'queued'
+	| 'already_playing'
 	| 'played_now'
 	| 'ignored_not_song'
 	| 'ignored_unavailable'
@@ -71,6 +78,7 @@ export type AiDjAction = {
 	matchedTrackId?: string;
 	matchedTrackTitle?: string;
 	matchedTrackArtist?: string;
+	queuePosition?: number;
 	reason: string;
 	model: string;
 };

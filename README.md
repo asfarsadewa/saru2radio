@@ -215,9 +215,9 @@ The request line is disabled while the station is off air. When on air, listener
 - Name: required, max 40 characters.
 - Message/request: required, max 500 characters.
 
-Requests are visible to the DJ in the studio's **Listener requests** panel and are kept only in memory for the current server session. If the AI DJ confirms that a genuine song request is unavailable, the submitting listener page receives a short-lived private reply and remains ready for another request. Comments, chatter, ambiguous requests, and unsafe messages receive no automated reply.
+Requests are visible to the DJ in the studio's **Listener requests** panel and are kept only in memory for the current server session. The submitting listener page receives a short-lived private reply when an accepted request is queued or when a genuine song request is unavailable, and it remains ready for another request. Comments, chatter, ambiguous requests, and unsafe messages receive no automated reply.
 
-If `OPENAI_API_KEY` is set, the local studio server also runs an AI DJ request agent. The agent classifies accepted listener messages against the current ready local track list, logs every action in the studio's **AI DJ actions** panel, and only auto-plays a match while Direct songs is already active. A request for an artist without a song title randomly selects one ready local track by that artist. The listener facade never receives the OpenAI key and does not expose the action log.
+If `OPENAI_API_KEY` is set, the local studio server also runs an AI DJ request agent. The agent classifies accepted listener messages against the current ready local track list, logs every action in the studio's **AI DJ actions** panel, and schedules a match only while Direct songs is active. A matched request is placed after the current song; listener requests keep first-in, first-out order, while a human DJ's explicit **Next** choice remains ahead of them. If Direct songs is active but has no current track, the request starts immediately. A request for an artist without a song title randomly selects one ready local track by that artist. The listener facade never receives the OpenAI key and does not expose the action log.
 
 ## Listener Request API
 
@@ -246,7 +246,7 @@ GET /requests/{request-id}/feedback
 X-Saru2radio-Request-Token: {feedback-token}
 ```
 
-The response status is `pending`, `unavailable`, or `complete`. Invalid, expired, or mismatched tokens return `404`; the endpoint never exposes the DJ action log or another listener's request.
+The response status is `pending`, `accepted`, `unavailable`, or `complete`. Accepted replies say whether the song is up next, was added to the queue, or is already playing. Invalid, expired, or mismatched tokens return `404`; the endpoint never exposes the DJ action log or another listener's request.
 
 Studio-only routes:
 
@@ -326,7 +326,7 @@ It also:
 | `OPENAI_API_KEY` | unset | Local OpenAI key for the server-side AI DJ request agent. |
 | `OPENAI_MODEL` | `gpt-5.6` | AI DJ model used for request classification. |
 | `AI_DJ_ENABLED` | `true` | Set to `false` to keep listener requests manual-only. |
-| `AI_DJ_MIN_CONFIDENCE` | `0.72` | Minimum model confidence required before AI DJ auto-plays a matched track. |
+| `AI_DJ_MIN_CONFIDENCE` | `0.72` | Minimum model confidence required before the AI DJ schedules a matched track. |
 
 Icecast runtime secrets are generated in:
 

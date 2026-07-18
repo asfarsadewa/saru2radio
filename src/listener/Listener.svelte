@@ -137,8 +137,13 @@
 			}
 
 			const feedback = (await response.json()) as ListenerRequestFeedback;
-			if (feedback.status === 'unavailable') {
-				showRequestFlash(feedback.message || "That song isn't in our library. Try another request.");
+			if (feedback.status === 'accepted' || feedback.status === 'unavailable') {
+				showRequestFlash(
+					feedback.message ||
+						(feedback.status === 'unavailable'
+							? "That song isn't in our library. Try another request."
+							: 'Your request was accepted.')
+				);
 				return;
 			}
 			if (feedback.status === 'pending') {

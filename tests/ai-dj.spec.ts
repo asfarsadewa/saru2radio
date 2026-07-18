@@ -120,13 +120,13 @@ describe('AiDjRequestAgent', () => {
 			client: null,
 			getReadyTracks: () => [],
 			isDirectSongsActive: () => false,
-			playNow: async () => {}
+			scheduleTrack: async () => ({ disposition: 'queued_next', queuePosition: 1 })
 		});
 
 		expect(agent.config().model).toBe('gpt-5.6');
 	});
 
-	it('plays a matched request immediately when Direct songs is active', async () => {
+	it('queues a matched request next when Direct songs is active', async () => {
 		const store = new AiDjActionStore();
 		const tracks = [createTrack('track-1', 'Neon Rain', 'Adi'), createTrack('track-2', 'Static Bloom', 'Saru')];
 		const played: string[] = [];
@@ -136,8 +136,9 @@ describe('AiDjRequestAgent', () => {
 			model: 'gpt-5.6',
 			getReadyTracks: () => tracks,
 			isDirectSongsActive: () => true,
-			playNow: async (track) => {
+			scheduleTrack: async (track) => {
 				played.push(track.id);
+				return { disposition: 'queued_next', queuePosition: 1 };
 			}
 		});
 
@@ -146,13 +147,14 @@ describe('AiDjRequestAgent', () => {
 
 		expect(played).toEqual(['track-1']);
 		expect(store.list()[0]).toMatchObject({
-			status: 'played_now',
+			status: 'queued_next',
 			decision: 'play',
-			matchedTrackId: 'track-1'
+			matchedTrackId: 'track-1',
+			queuePosition: 1
 		});
 	});
 
-	it('randomly plays one available track for an artist-only request', async () => {
+	it('randomly queues one available track for an artist-only request', async () => {
 		const store = new AiDjActionStore();
 		const tracks = [
 			createTrack('track-1', 'Neon Rain', 'Adi'),
@@ -172,8 +174,9 @@ describe('AiDjRequestAgent', () => {
 			model: 'gpt-5.6',
 			getReadyTracks: () => tracks,
 			isDirectSongsActive: () => true,
-			playNow: async (track) => {
+			scheduleTrack: async (track) => {
 				played.push(track.id);
+				return { disposition: 'queued_next', queuePosition: 1 };
 			},
 			random: () => 0.99
 		});
@@ -183,12 +186,57 @@ describe('AiDjRequestAgent', () => {
 
 		expect(played).toEqual(['track-2']);
 		expect(store.list()[0]).toMatchObject({
-			status: 'played_now',
+			status: 'queued_next',
 			decision: 'play_artist_random',
 			matchedTrackId: 'track-2',
 			matchedTrackArtist: 'Adi'
 		});
 		expect(store.list()[0].reason).toContain('Randomly selected Midnight Echo - Adi');
+	});
+
+	it('records the real queue position when an earlier request or human choice stays ahead', async () => {
+		const store = new AiDjActionStore();
+		const tracks = [createTrack('track-1', 'Neon Rain', 'Adi')];
+		const agent = createAiDjAgent({
+			actions: store,
+			client: fakeClient({ decision: 'play', trackId: 'track-1', confidence: 0.95, reason: 'Exact match.' }),
+			model: 'gpt-5.6',
+			getReadyTracks: () => tracks,
+			isDirectSongsActive: () => true,
+			scheduleTrack: async () => ({ disposition: 'queued', queuePosition: 3 })
+		});
+
+		agent.enqueue(createMessage('Please play Neon Rain'));
+		await agent.waitForIdle();
+
+		expect(store.list()[0]).toMatchObject({
+			status: 'queued',
+			matchedTrackId: 'track-1',
+			queuePosition: 3
+		});
+		expect(store.list()[0].reason).toContain('position 3');
+	});
+
+	it('records immediate playback when Direct songs has no current track', async () => {
+		const store = new AiDjActionStore();
+		const tracks = [createTrack('track-1', 'Neon Rain', 'Adi')];
+		const agent = createAiDjAgent({
+			actions: store,
+			client: fakeClient({ decision: 'play', trackId: 'track-1', confidence: 0.95, reason: 'Exact match.' }),
+			model: 'gpt-5.6',
+			getReadyTracks: () => tracks,
+			isDirectSongsActive: () => true,
+			scheduleTrack: async () => ({ disposition: 'played_now' })
+		});
+
+		agent.enqueue(createMessage('Please play Neon Rain'));
+		await agent.waitForIdle();
+
+		expect(store.list()[0]).toMatchObject({
+			status: 'played_now',
+			matchedTrackId: 'track-1'
+		});
+		expect(store.list()[0].reason).toContain('started it immediately because no song was playing');
 	});
 
 	it('logs matched requests without playback outside Direct songs mode', async () => {
@@ -201,8 +249,9 @@ describe('AiDjRequestAgent', () => {
 			model: 'gpt-5.6',
 			getReadyTracks: () => tracks,
 			isDirectSongsActive: () => false,
-			playNow: async (track) => {
+			scheduleTrack: async (track) => {
 				played.push(track.id);
+				return { disposition: 'queued_next', queuePosition: 1 };
 			}
 		});
 
@@ -233,7 +282,7 @@ describe('AiDjRequestAgent', () => {
 				model: 'gpt-5.6',
 				getReadyTracks: () => [createTrack('track-1', 'Neon Rain', 'Adi')],
 				isDirectSongsActive: () => true,
-				playNow: async () => {
+				scheduleTrack: async () => {
 					throw new Error('Should not play ignored requests.');
 				}
 			});
@@ -259,7 +308,7 @@ describe('AiDjRequestAgent', () => {
 			model: 'gpt-5.6',
 			getReadyTracks: () => [],
 			isDirectSongsActive: () => true,
-			playNow: async () => {
+			scheduleTrack: async () => {
 				throw new Error('Should not play non-request chatter.');
 			}
 		});
@@ -281,7 +330,7 @@ describe('AiDjRequestAgent', () => {
 			model: 'gpt-5.6',
 			getReadyTracks: () => [createTrack('track-1', 'Neon Rain', 'Adi')],
 			isDirectSongsActive: () => true,
-			playNow: async () => {
+			scheduleTrack: async () => {
 				throw new Error('Should not play without AI config.');
 			}
 		});

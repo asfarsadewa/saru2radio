@@ -97,6 +97,37 @@ describe('DirectMp3Playout', () => {
 		expect(source.connectCalls).toBe(1);
 		playout.stop();
 	});
+
+	it('preserves an ordered block of human and listener requests after the current track', async () => {
+		const source = new FakeSource();
+		const current = await createTrack('current');
+		const ordinaryNext = await createTrack('ordinary-next');
+		const humanNext = await createTrack('human-next');
+		const firstRequest = await createTrack('first-request');
+		const secondRequest = await createTrack('second-request');
+		const playout = new DirectMp3Playout(source as never, {
+			onTrack: () => {},
+			onStop: () => {},
+			onError: () => {}
+		});
+
+		playout.start([current, ordinaryNext, humanNext, firstRequest, secondRequest]);
+		expect(playout.queueAfterCurrent([humanNext, firstRequest, secondRequest]).map((track) => track.id)).toEqual([
+			'current',
+			'human-next',
+			'first-request',
+			'second-request',
+			'ordinary-next'
+		]);
+		expect(playout.queueAfterCurrent([humanNext, firstRequest, firstRequest, secondRequest]).map((track) => track.id)).toEqual([
+			'current',
+			'human-next',
+			'first-request',
+			'second-request',
+			'ordinary-next'
+		]);
+		playout.stop();
+	});
 });
 
 async function createTrack(id: string): Promise<Track> {

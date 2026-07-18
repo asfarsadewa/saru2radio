@@ -68,6 +68,49 @@ describe('AI DJ listener feedback', () => {
 			message: ''
 		});
 	});
+
+	it('returns truthful private confirmations for queued and currently playing requests', () => {
+		expect(
+			feedbackForAiDjAction(
+				createAction({
+					status: 'queued_next',
+					matchedTrackTitle: 'Neon Rain',
+					matchedTrackArtist: 'Adi',
+					queuePosition: 1
+				})
+			)
+		).toEqual({
+			status: 'accepted',
+			message: 'Your request is up next: Adi — Neon Rain.'
+		});
+
+		expect(
+			feedbackForAiDjAction(
+				createAction({
+					status: 'queued',
+					matchedTrackTitle: 'Static Bloom',
+					matchedTrackArtist: 'Saru',
+					queuePosition: 3
+				})
+			)
+		).toEqual({
+			status: 'accepted',
+			message: 'Your request was added to the queue: Saru — Static Bloom.'
+		});
+
+		expect(
+			feedbackForAiDjAction(
+				createAction({
+					status: 'already_playing',
+					matchedTrackTitle: 'Current Song',
+					matchedTrackArtist: 'Test Artist'
+				})
+			)
+		).toEqual({
+			status: 'accepted',
+			message: 'Your request is playing now: Test Artist — Current Song.'
+		});
+	});
 });
 
 function createAction(patch: Partial<AiDjAction>): AiDjAction {

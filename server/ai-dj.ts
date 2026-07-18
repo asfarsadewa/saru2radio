@@ -57,6 +57,11 @@ export type AiDjOpenAiClient = {
 	};
 };
 
+export type AiDjTrackScheduleResult = {
+	disposition: 'queued_next' | 'queued' | 'already_playing' | 'played_now';
+	queuePosition?: number;
+};
+
 export type AiDjRequestAgentOptions = {
 	enabled: boolean;
 	model: string;
@@ -65,7 +70,7 @@ export type AiDjRequestAgentOptions = {
 	actions: AiDjActionStore;
 	getReadyTracks: () => Track[];
 	isDirectSongsActive: () => boolean;
-	playNow: (track: Track) => Promise<void>;
+	scheduleTrack: (track: Track) => Promise<AiDjTrackScheduleResult>;
 	now?: () => Date;
 	random: () => number;
 };
@@ -217,18 +222,16 @@ export class AiDjRequestAgent {
 		}
 
 		try {
-			await this.options.playNow(decision.track);
+			const schedule = await this.options.scheduleTrack(decision.track);
 			this.options.actions.update(actionId, {
-				status: 'played_now',
+				status: schedule.disposition,
 				decision: decision.decision,
 				confidence: decision.confidence,
 				matchedTrackId: decision.track.id,
 				matchedTrackTitle: decision.track.title,
 				matchedTrackArtist: decision.track.artist,
-				reason:
-					decision.decision === 'play_artist_random'
-						? `Randomly selected ${formatTrackName(decision.track)} for ${message.name}'s artist request.`
-						: `Played ${formatTrackName(decision.track)} for ${message.name}.`
+				queuePosition: schedule.queuePosition,
+				reason: scheduledTrackReason(schedule, decision.decision, decision.track, message.name)
 			});
 		} catch (error) {
 			this.options.actions.update(actionId, {
@@ -238,7 +241,7 @@ export class AiDjRequestAgent {
 				matchedTrackId: decision.track.id,
 				matchedTrackTitle: decision.track.title,
 				matchedTrackArtist: decision.track.artist,
-				reason: error instanceof Error ? error.message : 'AI DJ could not start playback.'
+				reason: error instanceof Error ? error.message : 'AI DJ could not schedule the requested song.'
 			});
 		}
 	}
@@ -255,7 +258,7 @@ export function createAiDjAgent(options: {
 	actions: AiDjActionStore;
 	getReadyTracks: () => Track[];
 	isDirectSongsActive: () => boolean;
-	playNow: (track: Track) => Promise<void>;
+	scheduleTrack: (track: Track) => Promise<AiDjTrackScheduleResult>;
 	apiKey?: string;
 	model?: string;
 	enabled?: boolean;
@@ -281,9 +284,33 @@ export function createAiDjAgent(options: {
 		actions: options.actions,
 		getReadyTracks: options.getReadyTracks,
 		isDirectSongsActive: options.isDirectSongsActive,
-		playNow: options.playNow,
+		scheduleTrack: options.scheduleTrack,
 		random: options.random ?? Math.random
 	});
+}
+
+function scheduledTrackReason(
+	schedule: AiDjTrackScheduleResult,
+	decision: AiDjDecision,
+	track: Track,
+	listenerName: string
+): string {
+	const trackName = formatTrackName(track);
+	const selection =
+		decision === 'play_artist_random'
+			? `Randomly selected ${trackName} for ${listenerName}'s artist request`
+			: `Matched ${trackName} for ${listenerName}`;
+
+	switch (schedule.disposition) {
+		case 'queued_next':
+			return `${selection} and queued it next.`;
+		case 'queued':
+			return `${selection} and added it at queue position ${schedule.queuePosition ?? 'later'}.`;
+		case 'already_playing':
+			return `${trackName} is already playing for ${listenerName}'s request.`;
+		case 'played_now':
+			return `${selection} and started it immediately because no song was playing.`;
+	}
 }
 
 export async function classifyListenerRequest(options: {

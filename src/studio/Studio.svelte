@@ -56,12 +56,12 @@
 	} from '../lib/queue';
 	import type {
 		AiDjAction,
-		BroadcastStatus,
 		LibraryState,
 		ListenerMessage,
 		NowPlaying,
 		PreparationState,
 		ServerConfig,
+		StudioBroadcastStatus,
 		Track,
 		TunnelState
 	} from '../lib/types';
@@ -98,7 +98,7 @@
 		updatedAt: null,
 		error: null
 	};
-	let status: BroadcastStatus | null = null;
+	let status: StudioBroadcastStatus | null = null;
 	let tunnel: TunnelState = { running: false, url: null, startedAt: null, error: null, mode: null, hostname: null, configured: false };
 	let directoryInput = '';
 	let libraryRecursive = false;
@@ -260,7 +260,7 @@
 			ordered = studioState.ordered;
 			libraryRecursive = studioState.broadcastRecursive;
 			directoryInput = library.directory || studioState.broadcastDirectory || studioState.prepDirectory;
-			buildQueue();
+			buildQueue(nextStatus);
 			await handlePreparationTerminal();
 		} catch (error) {
 			setError(error);
@@ -269,13 +269,19 @@
 
 	async function refreshStatusOnly() {
 		try {
-			[status, tunnel, nowPlaying, listenerMessages, aiDjActions] = await Promise.all([
+			const [nextStatus, nextTunnel, nextNowPlaying, nextListenerMessages, nextAiDjActions] = await Promise.all([
 				getStatus(),
 				getTunnel(),
 				getNowPlaying(),
 				getListenerMessages(),
 				getAiDjActions()
 			]);
+			status = nextStatus;
+			tunnel = nextTunnel;
+			nowPlaying = nextNowPlaying;
+			listenerMessages = nextListenerMessages;
+			aiDjActions = nextAiDjActions;
+			syncServerQueue(nextStatus);
 		} catch {
 			// Polling should not interrupt the booth.
 		}
@@ -381,11 +387,31 @@
 		}
 	}
 
-	function buildQueue() {
+	function buildQueue(nextStatus = status) {
+		if (nextStatus?.directSongsActive && syncServerQueue(nextStatus)) {
+			return;
+		}
 		queue = createPlaybackQueue(currentReadyTracks(), ordered, nowPlaying?.trackId);
 		if (mixerOnAir && queue.length > 0) {
 			engine.setQueue(queue);
 		}
+	}
+
+	function syncServerQueue(nextStatus: StudioBroadcastStatus): boolean {
+		if (!nextStatus.directSongsActive || nextStatus.queueTrackIds.length === 0) {
+			return false;
+		}
+
+		const tracksById = new Map(currentReadyTracks().map((track) => [track.id, track]));
+		const serverQueue = nextStatus.queueTrackIds
+			.map((trackId) => tracksById.get(trackId))
+			.filter((track): track is Track => Boolean(track));
+		if (serverQueue.length === 0) {
+			return false;
+		}
+
+		queue = serverQueue;
+		return true;
 	}
 
 	function reconcileDisplayedQueue() {
@@ -1206,6 +1232,12 @@
 		switch (action.status) {
 			case 'analyzing':
 				return 'Analyzing';
+			case 'queued_next':
+				return 'Queued next';
+			case 'queued':
+				return action.queuePosition ? `Queued #${action.queuePosition}` : 'Queued';
+			case 'already_playing':
+				return 'Already playing';
 			case 'played_now':
 				return 'Played now';
 			case 'ignored_not_song':
@@ -1226,7 +1258,12 @@
 	}
 
 	function aiDjStatusClass(action: AiDjAction): string {
-		if (action.status === 'played_now') {
+		if (
+			action.status === 'queued_next' ||
+			action.status === 'queued' ||
+			action.status === 'already_playing' ||
+			action.status === 'played_now'
+		) {
 			return 'played';
 		}
 		if (action.status === 'analyzing') {

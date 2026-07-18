@@ -1,12 +1,12 @@
 import type {
 	AiDjAction,
 	BroadcastQueueStatus,
-	BroadcastStatus,
 	LibraryState,
 	ListenerMessage,
 	NowPlaying,
 	PreparationState,
 	ServerConfig,
+	StudioBroadcastStatus,
 	StudioState,
 	TunnelState
 } from './types';
@@ -76,22 +76,22 @@ export function startPreparation(directory: string, recursive = false): Promise<
 	});
 }
 
-export function startBroadcast(trackIds?: string[]): Promise<BroadcastStatus> {
-	return requestJson<BroadcastStatus>('/api/broadcast/start', {
+export function startBroadcast(trackIds?: string[]): Promise<StudioBroadcastStatus> {
+	return requestJson<StudioBroadcastStatus>('/api/broadcast/start', {
 		method: 'POST',
 		body: JSON.stringify({ trackIds })
 	});
 }
 
-export function playBroadcastNow(trackIds: string[]): Promise<BroadcastStatus> {
-	return requestJson<BroadcastStatus>('/api/broadcast/play-now', {
+export function playBroadcastNow(trackIds: string[]): Promise<StudioBroadcastStatus> {
+	return requestJson<StudioBroadcastStatus>('/api/broadcast/play-now', {
 		method: 'POST',
 		body: JSON.stringify({ trackIds })
 	});
 }
 
-export function updateBroadcastQueue(trackIds: string[]): Promise<BroadcastStatus> {
-	return requestJson<BroadcastStatus>('/api/broadcast/queue', {
+export function updateBroadcastQueue(trackIds: string[]): Promise<StudioBroadcastStatus> {
+	return requestJson<StudioBroadcastStatus>('/api/broadcast/queue', {
 		method: 'POST',
 		body: JSON.stringify({ trackIds })
 	});
@@ -104,12 +104,12 @@ export function queueBroadcastNext(trackId: string): Promise<BroadcastQueueStatu
 	});
 }
 
-export function skipBroadcast(): Promise<BroadcastStatus> {
-	return requestJson<BroadcastStatus>('/api/broadcast/skip', { method: 'POST' });
+export function skipBroadcast(): Promise<StudioBroadcastStatus> {
+	return requestJson<StudioBroadcastStatus>('/api/broadcast/skip', { method: 'POST' });
 }
 
-export function stopBroadcast(): Promise<BroadcastStatus> {
-	return requestJson<BroadcastStatus>('/api/broadcast/stop', { method: 'POST' });
+export function stopBroadcast(): Promise<StudioBroadcastStatus> {
+	return requestJson<StudioBroadcastStatus>('/api/broadcast/stop', { method: 'POST' });
 }
 
 export function updateNowPlaying(payload: {
@@ -124,8 +124,8 @@ export function updateNowPlaying(payload: {
 	});
 }
 
-export function getStatus(): Promise<BroadcastStatus> {
-	return requestJson<BroadcastStatus>('/api/status');
+export function getStatus(): Promise<StudioBroadcastStatus> {
+	return requestJson<StudioBroadcastStatus>('/api/status');
 }
 
 export function getNowPlaying(): Promise<NowPlaying> {

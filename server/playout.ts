@@ -109,6 +109,10 @@ export class DirectMp3Playout {
 	}
 
 	queueNext(track: Track): Track[] {
+		return this.queueAfterCurrent([track]);
+	}
+
+	queueAfterCurrent(tracks: Track[]): Track[] {
 		if (!this.running) {
 			throw new Error('Direct song playout is not running.');
 		}
@@ -117,20 +121,29 @@ export class DirectMp3Playout {
 		if (!currentTrack) {
 			throw new Error('There is no current song to queue after.');
 		}
-		if (track.id === currentTrack.id) {
+		const seenTrackIds = new Set<string>();
+		const upcomingTracks = tracks.filter((track) => {
+			if (track.id === currentTrack.id || seenTrackIds.has(track.id)) {
+				return false;
+			}
+			seenTrackIds.add(track.id);
+			return true;
+		});
+		if (upcomingTracks.length === 0) {
 			return this.getQueue();
 		}
 
-		const withoutTrack = this.queue.filter((candidate) => candidate.id !== track.id);
-		const currentIndex = withoutTrack.findIndex((candidate) => candidate.id === currentTrack.id);
+		const upcomingTrackIds = new Set(upcomingTracks.map((track) => track.id));
+		const withoutUpcomingTracks = this.queue.filter((candidate) => !upcomingTrackIds.has(candidate.id));
+		const currentIndex = withoutUpcomingTracks.findIndex((candidate) => candidate.id === currentTrack.id);
 		if (currentIndex < 0) {
 			throw new Error('The current song is no longer in the broadcast queue.');
 		}
 
 		this.queue = [
-			...withoutTrack.slice(0, currentIndex + 1),
-			track,
-			...withoutTrack.slice(currentIndex + 1)
+			...withoutUpcomingTracks.slice(0, currentIndex + 1),
+			...upcomingTracks,
+			...withoutUpcomingTracks.slice(currentIndex + 1)
 		];
 		this.currentIndex = currentIndex;
 		return this.getQueue();

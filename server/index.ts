@@ -5,7 +5,7 @@ import http from 'node:http';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { WebSocketServer } from 'ws';
-import type { BroadcastStatus, NowPlaying, ServerConfig, Track } from '../src/lib/types.js';
+import type { BroadcastStatus, NowPlaying, ServerConfig, StudioBroadcastStatus, Track } from '../src/lib/types.js';
 import { pickFolderWithDialog } from './folder-picker.js';
 import {
 	ensureIcecastRuntime,
@@ -33,7 +33,13 @@ import { BrowserSourceSessionGuard } from './source-session.js';
 import { SourceStreamPacer } from './source-pacer.js';
 import { StudioStateStore } from './studio-state.js';
 import { hasCloudflared, TunnelManager } from './tunnel.js';
-import { AiDjActionStore, createAiDjAgent, type AiDjRequestAgent } from './ai-dj.js';
+import {
+	AiDjActionStore,
+	createAiDjAgent,
+	type AiDjRequestAgent,
+	type AiDjTrackScheduleResult
+} from './ai-dj.js';
+import { AiDjQueueReservations } from './ai-dj-queue.js';
 
 const STATION_NAME = 'saru2radio';
 const STUDIO_PORT = Number(process.env.STUDIO_PORT ?? 8011);
@@ -63,6 +69,7 @@ const studioState = new StudioStateStore();
 const listenerMessages = new ListenerMessageStore();
 const listenerFeedback = new ListenerFeedbackStore();
 const aiDjActions = new AiDjActionStore();
+const aiDjQueueReservations = new AiDjQueueReservations();
 const activeListeners = new ActiveListenerCounter();
 const browserSourceSessions = new BrowserSourceSessionGuard();
 const tunnel = new TunnelManager();
@@ -82,6 +89,7 @@ async function main() {
 	});
 	playout = new DirectMp3Playout(source, {
 		onTrack: (track) => {
+			aiDjQueueReservations.markTrackStarted(track.id);
 			nowPlaying = {
 				trackId: track.id,
 				title: track.title,
@@ -91,6 +99,7 @@ async function main() {
 			};
 		},
 		onStop: () => {
+			aiDjQueueReservations.reset();
 			activeListeners.reset();
 			status = createStatus();
 			nowPlaying = {
@@ -113,7 +122,7 @@ async function main() {
 		minConfidence: AI_DJ_MIN_CONFIDENCE,
 		getReadyTracks: currentReadyTracks,
 		isDirectSongsActive,
-		playNow: playAiDjTrackNow
+		scheduleTrack: scheduleAiDjTrack
 	});
 
 	const studioApp = createStudioApp();
@@ -154,7 +163,7 @@ function createStudioApp() {
 		response.json(config);
 	});
 
-	app.get('/api/status', (_request, response) => response.json(currentStatus()));
+	app.get('/api/status', (_request, response) => response.json(currentStudioStatus()));
 	app.get('/api/listener-messages', (_request, response) => response.json(listenerMessages.list()));
 	app.delete('/api/listener-messages/:id', (request, response) => {
 		listenerFeedback.delete(request.params.id);
@@ -274,13 +283,14 @@ function createStudioApp() {
 				return;
 			}
 			const queue = resolveBroadcastQueue(request.body?.trackIds);
+			aiDjQueueReservations.reset();
 			await startDirectPlayout(queue);
 			status = {
 				...status,
 				onAir: true,
 				startedAt: new Date().toISOString()
 			};
-			response.json(currentStatus());
+			response.json(currentStudioStatus());
 		} catch (error) {
 			next(error);
 		}
@@ -292,13 +302,14 @@ function createStudioApp() {
 				return;
 			}
 			const queue = resolveBroadcastQueue(request.body?.trackIds);
+			aiDjQueueReservations.reset();
 			await startDirectPlayout(queue, { playNow: true });
 			status = {
 				...status,
 				onAir: true,
 				startedAt: status.startedAt ?? new Date().toISOString()
 			};
-			response.json(currentStatus());
+			response.json(currentStudioStatus());
 		} catch (error) {
 			next(error);
 		}
@@ -306,8 +317,9 @@ function createStudioApp() {
 	app.post('/api/broadcast/queue', (request, response, next) => {
 		try {
 			const queue = resolveBroadcastQueue(request.body?.trackIds);
+			aiDjQueueReservations.reset();
 			playout.setQueue(queue);
-			response.json(currentStatus());
+			response.json(currentStudioStatus());
 		} catch (error) {
 			next(error);
 		}
@@ -327,9 +339,9 @@ function createStudioApp() {
 			}
 
 			const queue = playout.queueNext(track);
+			aiDjQueueReservations.markHumanNext(track.id, nowPlaying.trackId);
 			response.json({
-				...currentStatus(),
-				queueTrackIds: queue.map((candidate) => candidate.id),
+				...currentStudioStatus(queue),
 				nowPlaying
 			});
 		} catch (error) {
@@ -338,10 +350,11 @@ function createStudioApp() {
 	});
 	app.post('/api/broadcast/skip', (_request, response) => {
 		playout.skip();
-		response.json(currentStatus());
+		response.json(currentStudioStatus());
 	});
 	app.post('/api/broadcast/stop', (_request, response) => {
 		browserSourceSessions.invalidate();
+		aiDjQueueReservations.reset();
 		playout.stop();
 		source.disconnect();
 		activeListeners.reset();
@@ -353,7 +366,7 @@ function createStudioApp() {
 			startedAt: null,
 			duration: null
 		};
-		response.json(currentStatus());
+		response.json(currentStudioStatus());
 	});
 
 	app.get('/api/tunnel', (_request, response) => response.json(tunnel.getState()));
@@ -669,6 +682,14 @@ function currentStatus(): BroadcastStatus {
 	};
 }
 
+function currentStudioStatus(queue = playout?.getQueue() ?? []): StudioBroadcastStatus {
+	return {
+		...currentStatus(),
+		directSongsActive: isDirectSongsActive(),
+		queueTrackIds: queue.map((track) => track.id)
+	};
+}
+
 function resolveBroadcastQueue(trackIds: unknown): Track[] {
 	const requestedIds = Array.isArray(trackIds) ? trackIds.map(String) : [];
 	if (requestedIds.length === 0) {
@@ -686,7 +707,43 @@ function isDirectSongsActive(): boolean {
 	return Boolean(status?.onAir && playout?.isRunning());
 }
 
+async function scheduleAiDjTrack(track: Track): Promise<AiDjTrackScheduleResult> {
+	const currentTrackId = nowPlaying.trackId;
+	const currentQueue = playout.getQueue();
+	if (!currentTrackId || !currentQueue.some((candidate) => candidate.id === currentTrackId)) {
+		await playAiDjTrackNow(track);
+		return { disposition: 'played_now' };
+	}
+	if (track.id === currentTrackId) {
+		return { disposition: 'already_playing', queuePosition: 0 };
+	}
+
+	const reservedTrackIds = aiDjQueueReservations.reserveListenerTrack(
+		track.id,
+		currentTrackId,
+		currentQueue.map((candidate) => candidate.id)
+	);
+	const tracksById = new Map(currentQueue.map((candidate) => [candidate.id, candidate]));
+	tracksById.set(track.id, track);
+	const reservedTracks = reservedTrackIds
+		.map((trackId) => tracksById.get(trackId))
+		.filter((candidate): candidate is Track => Boolean(candidate?.cacheReady));
+	const queue = playout.queueAfterCurrent(reservedTracks);
+	const currentIndex = queue.findIndex((candidate) => candidate.id === currentTrackId);
+	const requestedIndex = queue.findIndex((candidate) => candidate.id === track.id);
+	if (currentIndex < 0 || requestedIndex <= currentIndex) {
+		throw new Error('AI DJ could not place the requested song after the current track.');
+	}
+
+	const queuePosition = requestedIndex - currentIndex;
+	return {
+		disposition: queuePosition === 1 ? 'queued_next' : 'queued',
+		queuePosition
+	};
+}
+
 async function playAiDjTrackNow(track: Track): Promise<void> {
+	aiDjQueueReservations.reset();
 	const queue = cueAiDjTrack(track);
 	await startDirectPlayout(queue, { playNow: true });
 	status = {
