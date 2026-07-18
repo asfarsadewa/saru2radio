@@ -68,6 +68,15 @@
 
 	type BroadcastMode = 'direct' | 'mixer';
 	type DirectProgramMode = 'songs' | 'voice';
+	type QueueNextContext = {
+		onAir: boolean;
+		voiceProgramOnAir: boolean;
+		directProgramSwitching: boolean;
+		queueUpdatePending: boolean;
+		nowPlayingTrackId: string | null;
+		directSongsActive: boolean;
+		queueIncludesNowPlaying: boolean;
+	};
 
 	let config: ServerConfig | null = null;
 	let library: LibraryState = {
@@ -173,6 +182,15 @@
 	$: voiceProgramSelected = directModeSelected && directProgram === 'voice';
 	$: voiceProgramOnAir = directOnAir && inferredActiveDirectProgram === 'voice';
 	$: directSongsOnAir = directOnAir && inferredActiveDirectProgram !== 'voice';
+	$: queueNextContext = {
+		onAir,
+		voiceProgramOnAir,
+		directProgramSwitching,
+		queueUpdatePending,
+		nowPlayingTrackId: nowPlaying?.trackId ?? null,
+		directSongsActive: Boolean(status?.directSongsActive),
+		queueIncludesNowPlaying
+	};
 	$: directProgramControlDisabled = directProgramSwitching || mixerOnAir || (!directModeSelected && !directOnAir);
 	$: ambientBedLabel = `Bed ${Math.round(ambientBedLevel * 100)}%`;
 	$: micButtonDisabled = directProgramSwitching || !onAir || !micReady || micMuted;
@@ -1089,7 +1107,7 @@
 	}
 
 	async function playTrackNext(track: Track) {
-		if (!canQueueTrackNext(track) || !nowPlaying?.trackId) {
+		if (!canQueueTrackNext(track, queueNextContext) || !nowPlaying?.trackId) {
 			return;
 		}
 
@@ -1119,36 +1137,36 @@
 		}
 	}
 
-	function canQueueTrackNext(track: Track): boolean {
+	function canQueueTrackNext(track: Track, context: QueueNextContext): boolean {
 		return (
 			track.cacheReady &&
-			onAir &&
-			!voiceProgramOnAir &&
-			!directProgramSwitching &&
-			!queueUpdatePending &&
-			Boolean(nowPlaying?.trackId) &&
-			(Boolean(status?.directSongsActive) || queueIncludesNowPlaying) &&
-			nowPlaying?.trackId !== track.id
+			context.onAir &&
+			!context.voiceProgramOnAir &&
+			!context.directProgramSwitching &&
+			!context.queueUpdatePending &&
+			Boolean(context.nowPlayingTrackId) &&
+			(context.directSongsActive || context.queueIncludesNowPlaying) &&
+			context.nowPlayingTrackId !== track.id
 		);
 	}
 
-	function queueNextTitle(track: Track): string {
+	function queueNextTitle(track: Track, context: QueueNextContext): string {
 		if (!track.cacheReady) {
 			return 'Prepare this song before queueing it';
 		}
-		if (!onAir) {
+		if (!context.onAir) {
 			return 'Go on air to queue this song next';
 		}
-		if (voiceProgramOnAir) {
+		if (context.voiceProgramOnAir) {
 			return 'Play next is unavailable during a voice program';
 		}
-		if (directProgramSwitching || queueUpdatePending) {
+		if (context.directProgramSwitching || context.queueUpdatePending) {
 			return 'Wait for the current program change to finish';
 		}
-		if (!nowPlaying?.trackId || (!status?.directSongsActive && !queueIncludesNowPlaying)) {
+		if (!context.nowPlayingTrackId || (!context.directSongsActive && !context.queueIncludesNowPlaying)) {
 			return 'Waiting for the current song';
 		}
-		if (nowPlaying.trackId === track.id) {
+		if (context.nowPlayingTrackId === track.id) {
 			return 'This song is already playing';
 		}
 		return 'Play next';
@@ -1474,9 +1492,9 @@
 							class:queued={nextTrackId === track.id}
 							class="queue-next-button"
 							type="button"
-							disabled={!canQueueTrackNext(track)}
+							disabled={!canQueueTrackNext(track, queueNextContext)}
 							aria-label={`Play ${track.title} next`}
-							title={queueNextTitle(track)}
+							title={queueNextTitle(track, queueNextContext)}
 							on:click={() => playTrackNext(track)}
 						>
 							<ListPlus />

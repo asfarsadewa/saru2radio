@@ -27,7 +27,7 @@ test('studio dashboard renders local booth controls', async ({ page, request }) 
 
 test('Studio rebuilds and syncs the server queue while preserving human Next control', async ({ page }) => {
 	const status = {
-		onAir: true,
+		onAir: false,
 		streamUrl: '',
 		stationName: 'saru2radio',
 		startedAt: '2026-07-16T12:00:00.000Z',
@@ -132,6 +132,14 @@ test('Studio rebuilds and syncs the server queue while preserving human Next con
 	await expect.poll(() => trackList.evaluate((list) => list.scrollHeight > list.clientHeight)).toBe(true);
 	await expect(page.getByRole('button', { name: 'Play Current Song next' })).toBeDisabled();
 	await expect(page.locator('.queue-items p').nth(1)).toHaveText('Night Signal');
+	const nextButton = page.getByRole('button', { name: 'Play Night Signal next' });
+	await expect(nextButton).toBeDisabled();
+	await expect(nextButton).toHaveAttribute('title', 'Go on air to queue this song next');
+
+	status.onAir = true;
+	await expect(page.getByText('ON AIR', { exact: true })).toBeVisible({ timeout: 5000 });
+	await expect(nextButton).toBeEnabled();
+	await expect(nextButton).toHaveAttribute('title', 'Play next');
 
 	await page.getByRole('button', { name: 'Shuffle' }).click();
 	await expect.poll(() => replacedQueueTrackIds).toEqual(trackIds);
@@ -140,7 +148,6 @@ test('Studio rebuilds and syncs the server queue while preserving human Next con
 	queuedTrackIds = ['current', 'middle', 'requested', ...trackIds.slice(3)];
 	await expect(page.locator('.queue-items p').nth(1)).toHaveText('Middle Song', { timeout: 5000 });
 
-	const nextButton = page.getByRole('button', { name: 'Play Night Signal next' });
 	await expect(nextButton).toBeEnabled();
 	await nextButton.click();
 
