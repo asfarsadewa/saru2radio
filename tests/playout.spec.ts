@@ -2,6 +2,7 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { AiDjQueueCoordinator } from '../server/ai-dj-queue.js';
 import { calculatePlayoutDelayMs, DirectMp3Playout, estimatePacedBytesPerSecond, findCurrentTrackIndex } from '../server/playout.js';
 import type { Track } from '../src/lib/types.js';
 
@@ -127,6 +128,118 @@ describe('DirectMp3Playout', () => {
 			'ordinary-next'
 		]);
 		playout.stop();
+	});
+
+	it('preserves human priority and listener FIFO across a routine queue replacement', async () => {
+		const source = new FakeSource();
+		const current = await createTrack('current');
+		const ordinary = await createTrack('ordinary');
+		const humanNext = await createTrack('human-next');
+		const firstRequest = await createTrack('first-request');
+		const secondRequest = await createTrack('second-request');
+		const thirdRequest = await createTrack('third-request');
+		const playedWhenIdle: string[] = [];
+		const playout = new DirectMp3Playout(source as never, {
+			onTrack: () => {},
+			onStop: () => {},
+			onError: () => {}
+		});
+		const coordinator = new AiDjQueueCoordinator(playout, async (track) => {
+			playedWhenIdle.push(track.id);
+		});
+
+		playout.start([current, ordinary, humanNext, firstRequest, secondRequest, thirdRequest]);
+		playout.pause();
+		coordinator.queueHumanNext(humanNext);
+		expect(await coordinator.schedule(firstRequest)).toEqual({ disposition: 'queued', queuePosition: 2 });
+		expect(await coordinator.schedule(secondRequest)).toEqual({ disposition: 'queued', queuePosition: 3 });
+
+		expect(
+			coordinator
+				.replaceQueue([current, thirdRequest, ordinary, secondRequest, humanNext, firstRequest])
+				.map((track) => track.id)
+		).toEqual(['current', 'human-next', 'first-request', 'second-request', 'third-request', 'ordinary']);
+		expect(await coordinator.schedule(thirdRequest)).toEqual({ disposition: 'queued', queuePosition: 4 });
+		expect(playout.getQueue().map((track) => track.id)).toEqual([
+			'current',
+			'human-next',
+			'first-request',
+			'second-request',
+			'third-request',
+			'ordinary'
+		]);
+		expect(playedWhenIdle).toEqual([]);
+		playout.stop();
+	});
+
+	it('queues after the audible track even when a replacement queue omits that track', async () => {
+		const source = new FakeSource();
+		const current = await createTrack('current');
+		const ordinary = await createTrack('ordinary');
+		const requested = await createTrack('requested');
+		const playedWhenIdle: string[] = [];
+		const playout = new DirectMp3Playout(source as never, {
+			onTrack: () => {},
+			onStop: () => {},
+			onError: () => {}
+		});
+		const coordinator = new AiDjQueueCoordinator(playout, async (track) => {
+			playedWhenIdle.push(track.id);
+		});
+
+		playout.start([current, ordinary, requested]);
+		playout.pause();
+		coordinator.replaceQueue([ordinary, requested]);
+
+		expect(playout.getActiveTrack()?.id).toBe('current');
+		expect(await coordinator.schedule(requested)).toEqual({ disposition: 'queued_next', queuePosition: 1 });
+		expect(playout.getQueue().map((track) => track.id)).toEqual(['requested', 'ordinary']);
+		expect(playedWhenIdle).toEqual([]);
+		playout.stop();
+	});
+
+	it('keeps an explicit play-now target ahead of a concurrent listener request', async () => {
+		const source = new FakeSource();
+		const current = await createTrack('current');
+		const playNowTrack = await createTrack('play-now');
+		const ordinary = await createTrack('ordinary');
+		const requested = await createTrack('requested');
+		const seenTracks: string[] = [];
+		const playout = new DirectMp3Playout(source as never, {
+			onTrack: (track) => seenTracks.push(track.id),
+			onStop: () => {},
+			onError: () => {}
+		});
+		const coordinator = new AiDjQueueCoordinator(playout, async () => {});
+
+		playout.start([current, ordinary]);
+		playout.pause();
+		playout.playNow([playNowTrack, ordinary, requested]);
+
+		expect(await coordinator.schedule(requested)).toEqual({ disposition: 'queued', queuePosition: 2 });
+		expect(playout.getQueue().map((track) => track.id)).toEqual(['play-now', 'requested', 'ordinary']);
+
+		playout.resume();
+		await waitFor(() => seenTracks.includes('play-now'));
+		expect(seenTracks.slice(0, 2)).toEqual(['current', 'play-now']);
+		playout.stop();
+	});
+
+	it('starts a request immediately only when playout is genuinely idle', async () => {
+		const source = new FakeSource();
+		const requested = await createTrack('requested');
+		const playedWhenIdle: string[] = [];
+		const playout = new DirectMp3Playout(source as never, {
+			onTrack: () => {},
+			onStop: () => {},
+			onError: () => {}
+		});
+		const coordinator = new AiDjQueueCoordinator(playout, async (track) => {
+			playedWhenIdle.push(track.id);
+		});
+
+		expect(await coordinator.schedule(requested)).toEqual({ disposition: 'played_now' });
+		expect(playedWhenIdle).toEqual(['requested']);
 	});
 });
 

@@ -22,6 +22,7 @@ export class DirectMp3Playout {
 	private resumeWaiters: Array<() => void> = [];
 	private queue: Track[] = [];
 	private currentIndex = 0;
+	private activeTrack: Track | null = null;
 	private switchRequested = false;
 	private token = 0;
 
@@ -52,6 +53,7 @@ export class DirectMp3Playout {
 				return;
 			}
 			this.running = false;
+			this.activeTrack = null;
 			this.source.disconnect();
 			this.callbacks.onError(error instanceof Error ? error.message : 'Direct MP3 playout failed.');
 			this.callbacks.onStop();
@@ -79,13 +81,14 @@ export class DirectMp3Playout {
 			throw new Error('Prepare at least one radio copy before going on air.');
 		}
 
-		const currentTrack = this.currentTrack();
+		const currentTrack = this.switchRequested ? this.currentTrack() : (this.activeTrack ?? this.currentTrack());
 		this.queue = queue;
 		this.currentIndex = currentTrack ? findCurrentTrackIndex(queue, currentTrack.id) : 0;
 	}
 
 	stop(disconnect = true): void {
 		this.running = false;
+		this.activeTrack = null;
 		this.skipRequested = true;
 		this.switchRequested = false;
 		this.resumePausedLoop();
@@ -108,6 +111,10 @@ export class DirectMp3Playout {
 		return [...this.queue];
 	}
 
+	getActiveTrack(): Track | null {
+		return this.running && this.activeTrack ? { ...this.activeTrack } : null;
+	}
+
 	queueNext(track: Track): Track[] {
 		return this.queueAfterCurrent([track]);
 	}
@@ -117,7 +124,7 @@ export class DirectMp3Playout {
 			throw new Error('Direct song playout is not running.');
 		}
 
-		const currentTrack = this.currentTrack();
+		const currentTrack = this.switchRequested ? this.currentTrack() : (this.activeTrack ?? this.currentTrack());
 		if (!currentTrack) {
 			throw new Error('There is no current song to queue after.');
 		}
@@ -137,6 +144,11 @@ export class DirectMp3Playout {
 		const withoutUpcomingTracks = this.queue.filter((candidate) => !upcomingTrackIds.has(candidate.id));
 		const currentIndex = withoutUpcomingTracks.findIndex((candidate) => candidate.id === currentTrack.id);
 		if (currentIndex < 0) {
+			if (this.activeTrack?.id === currentTrack.id) {
+				this.queue = [...upcomingTracks, ...withoutUpcomingTracks];
+				this.currentIndex = -1;
+				return this.getQueue();
+			}
 			throw new Error('The current song is no longer in the broadcast queue.');
 		}
 
@@ -174,14 +186,19 @@ export class DirectMp3Playout {
 				break;
 			}
 
+			this.activeTrack = track;
 			this.callbacks.onTrack(track);
 			await this.streamTrack(track, token);
 			this.skipRequested = false;
 			if (this.switchRequested) {
 				this.switchRequested = false;
+				this.currentIndex = Math.max(0, this.currentIndex);
 			} else {
 				this.currentIndex += 1;
 			}
+		}
+		if (token === this.token) {
+			this.activeTrack = null;
 		}
 	}
 

@@ -24,7 +24,7 @@ test('studio dashboard renders local booth controls', async ({ page, request }) 
 	expect(clearAiDjActionsResponse.ok()).toBe(true);
 });
 
-test('human DJ can queue a ready song directly after the current song', async ({ page }) => {
+test('Studio rebuilds and syncs the server queue while preserving human Next control', async ({ page }) => {
 	const status = {
 		onAir: true,
 		streamUrl: '',
@@ -58,7 +58,8 @@ test('human DJ can queue a ready song directly after the current song', async ({
 		cacheReady: true,
 		cacheStale: false
 	}));
-	let queuedTrackIds = [...trackIds];
+	let queuedTrackIds = ['current', 'requested', 'middle', ...trackIds.slice(3)];
+	let replacedQueueTrackIds: string[] = [];
 
 	await page.route(`${STUDIO_URL}/api/status`, (route) =>
 		route.fulfill({
@@ -89,15 +90,27 @@ test('human DJ can queue a ready song directly after the current song', async ({
 			json: {
 				broadcastDirectory: 'C:\\Music',
 				broadcastRecursive: false,
-				ordered: true,
+				ordered: false,
 				prepDirectory: 'C:\\Music',
 				updatedAt: '2026-07-16T12:00:00.000Z'
 			}
 		})
 	);
+	await page.route(`${STUDIO_URL}/api/broadcast/queue`, async (route) => {
+		const body = route.request().postDataJSON() as { trackIds: string[] };
+		replacedQueueTrackIds = body.trackIds;
+		queuedTrackIds = ['current', 'requested', 'middle', ...trackIds.slice(3)];
+		await route.fulfill({
+			json: {
+				...status,
+				directSongsActive: true,
+				queueTrackIds: queuedTrackIds
+			}
+		});
+	});
 	await page.route(`${STUDIO_URL}/api/broadcast/queue-next`, async (route) => {
 		expect(route.request().postDataJSON()).toEqual({ trackId: 'requested' });
-		queuedTrackIds = ['current', 'requested', 'middle'];
+		queuedTrackIds = ['current', 'requested', 'middle', ...trackIds.slice(3)];
 		await route.fulfill({
 			json: {
 				...status,
@@ -117,13 +130,30 @@ test('human DJ can queue a ready song directly after the current song', async ({
 		.toBeGreaterThan(36);
 	await expect.poll(() => trackList.evaluate((list) => list.scrollHeight > list.clientHeight)).toBe(true);
 	await expect(page.getByRole('button', { name: 'Play Current Song next' })).toBeDisabled();
+	await expect(page.locator('.queue-items p').nth(1)).toHaveText('Night Signal');
+
+	await page.getByRole('button', { name: 'Shuffle' }).click();
+	await expect.poll(() => replacedQueueTrackIds).toEqual(trackIds);
+	await expect(page.locator('.queue-items p').nth(1)).toHaveText('Night Signal');
+
+	queuedTrackIds = ['current', 'middle', 'requested', ...trackIds.slice(3)];
+	await expect(page.locator('.queue-items p').nth(1)).toHaveText('Middle Song', { timeout: 5000 });
+
 	const nextButton = page.getByRole('button', { name: 'Play Night Signal next' });
 	await expect(nextButton).toBeEnabled();
 	await nextButton.click();
 
-	await expect.poll(() => queuedTrackIds).toEqual(['current', 'requested', 'middle']);
+	await expect.poll(() => queuedTrackIds.slice(0, 3)).toEqual(['current', 'requested', 'middle']);
 	await expect(nextButton).toContainText('Queued');
 	await expect(page.locator('.queue-items p').nth(1)).toHaveText('Night Signal');
+
+	nowPlaying.trackId = 'removed-current';
+	nowPlaying.title = 'Removed Current Song';
+	queuedTrackIds = ['removed-current', 'requested', 'middle', ...trackIds.slice(3)];
+	await expect(page.getByRole('button', { name: 'Play Night Signal next' })).toContainText('Queued', {
+		timeout: 5000
+	});
+	await expect(page.getByRole('button', { name: 'Play Middle Song next' })).toBeEnabled();
 });
 
 test('public facade renders listener page and hides studio API', async ({ page, request }) => {

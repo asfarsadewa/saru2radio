@@ -154,7 +154,12 @@
 	$: activeListenerLabel = `${activeListeners} ${activeListeners === 1 ? 'LISTENER' : 'LISTENERS'}`;
 	$: listenerUrl = tunnel.url ?? config?.listenerUrl ?? '';
 	$: displayQueue = rotateQueueToTrack(queue, nowPlaying?.trackId);
-	$: nextTrackId = nowPlaying?.trackId ? displayQueue[1]?.id ?? null : null;
+	$: queueIncludesNowPlaying = Boolean(
+		nowPlaying?.trackId && queue.some((track) => track.id === nowPlaying?.trackId)
+	);
+	$: nextTrackId = nowPlaying?.trackId
+		? displayQueue[queueIncludesNowPlaying ? 1 : 0]?.id ?? null
+		: null;
 	$: levelStyle = `--level: ${outputLevel.toFixed(3)};`;
 	$: micOpen = micHeld || micLatched;
 	$: micLevelStyle = `--mic-level: ${micLevel.toFixed(3)};`;
@@ -314,9 +319,11 @@
 			preparation = nextPreparation;
 			directoryInput = nextLibrary.directory;
 			await updateStudioState({ broadcastRecursive: libraryRecursive });
-			buildQueue();
+			buildQueue(status, { preferServerQueue: false });
 			if (directSongsOnAir && queue.length > 0) {
-				status = await updateBroadcastQueue(queue.map((track) => track.id));
+				const nextStatus = await updateBroadcastQueue(queue.map((track) => track.id));
+				status = nextStatus;
+				syncServerQueue(nextStatus);
 			}
 		} catch (error) {
 			setError(error);
@@ -387,8 +394,11 @@
 		}
 	}
 
-	function buildQueue(nextStatus = status) {
-		if (nextStatus?.directSongsActive && syncServerQueue(nextStatus)) {
+	function buildQueue(
+		nextStatus = status,
+		options: { preferServerQueue?: boolean } = {}
+	) {
+		if ((options.preferServerQueue ?? true) && nextStatus?.directSongsActive && syncServerQueue(nextStatus)) {
 			return;
 		}
 		queue = createPlaybackQueue(currentReadyTracks(), ordered, nowPlaying?.trackId);
@@ -1102,7 +1112,7 @@
 			!directProgramSwitching &&
 			!queueUpdatePending &&
 			Boolean(nowPlaying?.trackId) &&
-			queue.some((candidate) => candidate.id === nowPlaying?.trackId) &&
+			(Boolean(status?.directSongsActive) || queueIncludesNowPlaying) &&
 			nowPlaying?.trackId !== track.id
 		);
 	}
@@ -1120,7 +1130,7 @@
 		if (directProgramSwitching || queueUpdatePending) {
 			return 'Wait for the current program change to finish';
 		}
-		if (!nowPlaying?.trackId || !queue.some((candidate) => candidate.id === nowPlaying?.trackId)) {
+		if (!nowPlaying?.trackId || (!status?.directSongsActive && !queueIncludesNowPlaying)) {
 			return 'Waiting for the current song';
 		}
 		if (nowPlaying.trackId === track.id) {
@@ -1133,10 +1143,12 @@
 		const previousOrdered = ordered;
 		const previousQueue = queue;
 		ordered = !ordered;
-		buildQueue();
+		buildQueue(status, { preferServerQueue: false });
 		try {
 			if (directSongsOnAir && queue.length > 0) {
-				status = await updateBroadcastQueue(queue.map((track) => track.id));
+				const nextStatus = await updateBroadcastQueue(queue.map((track) => track.id));
+				status = nextStatus;
+				syncServerQueue(nextStatus);
 			}
 			await updateStudioState({ ordered });
 		} catch (error) {

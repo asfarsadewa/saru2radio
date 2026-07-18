@@ -36,10 +36,9 @@ import { hasCloudflared, TunnelManager } from './tunnel.js';
 import {
 	AiDjActionStore,
 	createAiDjAgent,
-	type AiDjRequestAgent,
-	type AiDjTrackScheduleResult
+	type AiDjRequestAgent
 } from './ai-dj.js';
-import { AiDjQueueReservations } from './ai-dj-queue.js';
+import { AiDjQueueCoordinator } from './ai-dj-queue.js';
 
 const STATION_NAME = 'saru2radio';
 const STUDIO_PORT = Number(process.env.STUDIO_PORT ?? 8011);
@@ -69,13 +68,13 @@ const studioState = new StudioStateStore();
 const listenerMessages = new ListenerMessageStore();
 const listenerFeedback = new ListenerFeedbackStore();
 const aiDjActions = new AiDjActionStore();
-const aiDjQueueReservations = new AiDjQueueReservations();
 const activeListeners = new ActiveListenerCounter();
 const browserSourceSessions = new BrowserSourceSessionGuard();
 const tunnel = new TunnelManager();
 let source: IcecastSourceConnection;
 let playout: DirectMp3Playout;
 let aiDj: AiDjRequestAgent;
+let aiDjQueue: AiDjQueueCoordinator;
 let cloudflaredAvailable = false;
 
 async function main() {
@@ -89,7 +88,7 @@ async function main() {
 	});
 	playout = new DirectMp3Playout(source, {
 		onTrack: (track) => {
-			aiDjQueueReservations.markTrackStarted(track.id);
+			aiDjQueue.markTrackStarted(track.id);
 			nowPlaying = {
 				trackId: track.id,
 				title: track.title,
@@ -99,7 +98,7 @@ async function main() {
 			};
 		},
 		onStop: () => {
-			aiDjQueueReservations.reset();
+			aiDjQueue.reset();
 			activeListeners.reset();
 			status = createStatus();
 			nowPlaying = {
@@ -114,6 +113,7 @@ async function main() {
 			console.error(`[playout] ${message}`);
 		}
 	});
+	aiDjQueue = new AiDjQueueCoordinator(playout, playAiDjTrackNow);
 	aiDj = createAiDjAgent({
 		actions: aiDjActions,
 		apiKey: process.env.OPENAI_API_KEY,
@@ -122,7 +122,7 @@ async function main() {
 		minConfidence: AI_DJ_MIN_CONFIDENCE,
 		getReadyTracks: currentReadyTracks,
 		isDirectSongsActive,
-		scheduleTrack: scheduleAiDjTrack
+		scheduleTrack: (track) => aiDjQueue.schedule(track)
 	});
 
 	const studioApp = createStudioApp();
@@ -283,7 +283,7 @@ function createStudioApp() {
 				return;
 			}
 			const queue = resolveBroadcastQueue(request.body?.trackIds);
-			aiDjQueueReservations.reset();
+			aiDjQueue.reset();
 			await startDirectPlayout(queue);
 			status = {
 				...status,
@@ -302,7 +302,7 @@ function createStudioApp() {
 				return;
 			}
 			const queue = resolveBroadcastQueue(request.body?.trackIds);
-			aiDjQueueReservations.reset();
+			aiDjQueue.reset();
 			await startDirectPlayout(queue, { playNow: true });
 			status = {
 				...status,
@@ -317,9 +317,8 @@ function createStudioApp() {
 	app.post('/api/broadcast/queue', (request, response, next) => {
 		try {
 			const queue = resolveBroadcastQueue(request.body?.trackIds);
-			aiDjQueueReservations.reset();
-			playout.setQueue(queue);
-			response.json(currentStudioStatus());
+			const updatedQueue = aiDjQueue.replaceQueue(queue);
+			response.json(currentStudioStatus(updatedQueue));
 		} catch (error) {
 			next(error);
 		}
@@ -338,8 +337,7 @@ function createStudioApp() {
 				return;
 			}
 
-			const queue = playout.queueNext(track);
-			aiDjQueueReservations.markHumanNext(track.id, nowPlaying.trackId);
+			const queue = aiDjQueue.queueHumanNext(track);
 			response.json({
 				...currentStudioStatus(queue),
 				nowPlaying
@@ -354,7 +352,7 @@ function createStudioApp() {
 	});
 	app.post('/api/broadcast/stop', (_request, response) => {
 		browserSourceSessions.invalidate();
-		aiDjQueueReservations.reset();
+		aiDjQueue.reset();
 		playout.stop();
 		source.disconnect();
 		activeListeners.reset();
@@ -683,10 +681,15 @@ function currentStatus(): BroadcastStatus {
 }
 
 function currentStudioStatus(queue = playout?.getQueue() ?? []): StudioBroadcastStatus {
+	const queueTrackIds = queue.map((track) => track.id);
+	const activeTrackId = playout?.getActiveTrack()?.id;
 	return {
 		...currentStatus(),
 		directSongsActive: isDirectSongsActive(),
-		queueTrackIds: queue.map((track) => track.id)
+		queueTrackIds:
+			activeTrackId && !queueTrackIds.includes(activeTrackId)
+				? [activeTrackId, ...queueTrackIds]
+				: queueTrackIds
 	};
 }
 
@@ -707,43 +710,7 @@ function isDirectSongsActive(): boolean {
 	return Boolean(status?.onAir && playout?.isRunning());
 }
 
-async function scheduleAiDjTrack(track: Track): Promise<AiDjTrackScheduleResult> {
-	const currentTrackId = nowPlaying.trackId;
-	const currentQueue = playout.getQueue();
-	if (!currentTrackId || !currentQueue.some((candidate) => candidate.id === currentTrackId)) {
-		await playAiDjTrackNow(track);
-		return { disposition: 'played_now' };
-	}
-	if (track.id === currentTrackId) {
-		return { disposition: 'already_playing', queuePosition: 0 };
-	}
-
-	const reservedTrackIds = aiDjQueueReservations.reserveListenerTrack(
-		track.id,
-		currentTrackId,
-		currentQueue.map((candidate) => candidate.id)
-	);
-	const tracksById = new Map(currentQueue.map((candidate) => [candidate.id, candidate]));
-	tracksById.set(track.id, track);
-	const reservedTracks = reservedTrackIds
-		.map((trackId) => tracksById.get(trackId))
-		.filter((candidate): candidate is Track => Boolean(candidate?.cacheReady));
-	const queue = playout.queueAfterCurrent(reservedTracks);
-	const currentIndex = queue.findIndex((candidate) => candidate.id === currentTrackId);
-	const requestedIndex = queue.findIndex((candidate) => candidate.id === track.id);
-	if (currentIndex < 0 || requestedIndex <= currentIndex) {
-		throw new Error('AI DJ could not place the requested song after the current track.');
-	}
-
-	const queuePosition = requestedIndex - currentIndex;
-	return {
-		disposition: queuePosition === 1 ? 'queued_next' : 'queued',
-		queuePosition
-	};
-}
-
 async function playAiDjTrackNow(track: Track): Promise<void> {
-	aiDjQueueReservations.reset();
 	const queue = cueAiDjTrack(track);
 	await startDirectPlayout(queue, { playNow: true });
 	status = {
