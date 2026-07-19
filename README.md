@@ -314,6 +314,14 @@ It also:
 - preserves `live.mp3` as a no-transform MP3 stream;
 - serves branded offline responses when the tunnel/origin is down.
 
+Deploy the listener edge from the checked-in `wrangler.jsonc` configuration:
+
+```powershell
+bun run deploy:edge
+```
+
+The GitHub CI workflow deploys the production Worker after all tests pass on `main` when `cloudflare/**` or `wrangler.jsonc` changes. A manual `workflow_dispatch` run always redeploys it. The repository needs `CLOUDFLARE_ACCOUNT_ID` and a narrowly scoped `CLOUDFLARE_API_TOKEN` in Actions secrets; Cloudflare's **Edit Cloudflare Workers** token template provides the required Worker and route permissions.
+
 ## Environment Variables
 
 | Variable | Default | Purpose |

@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "bun run build && tsx server/index.ts",
     "start": "tsx server/index.ts",
+    "deploy:edge": "wrangler deploy",
     "prepare:radio": "tsx server/prepare-cli.ts",
     "setup:radio-sound": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup-radio-sound.ps1",
     "check": "svelte-check --tsconfig ./tsconfig.json && tsc -p tsconfig.server.json --noEmit",
@@ -36,6 +37,7 @@
     "tsx": "^4.23.1",
     "typescript": "6.0.3",
     "vite": "^8.1.5",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.10",
+    "wrangler": "4.112.0"
   }
 }

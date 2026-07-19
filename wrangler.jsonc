@@ -1,0 +1,13 @@
+{
+	"$schema": "./node_modules/wrangler/config-schema.json",
+	"name": "saru2radio-listener-edge",
+	"main": "cloudflare/saru2radio-listener-edge.js",
+	"compatibility_date": "2026-05-24",
+	"workers_dev": false,
+	"routes": [
+		{
+			"pattern": "saru2radio.com/*",
+			"zone_name": "saru2radio.com"
+		}
+	]
+}
