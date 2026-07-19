@@ -53,6 +53,7 @@
 			]);
 			status = (await statusResponse.json()) as BroadcastStatus;
 			nowPlaying = (await nowResponse.json()) as NowPlaying;
+			errorMessage = '';
 		} catch {
 			errorMessage = 'Could not reach saru2radio.';
 		}

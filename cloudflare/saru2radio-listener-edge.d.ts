@@ -5,3 +5,4 @@ declare const worker: {
 export default worker;
 export function toOriginUrl(url: URL): URL;
 export function offlineResponse(url: URL): Response;
+export function isAllowedPublicPath(pathname: string): boolean;

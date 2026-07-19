@@ -57,7 +57,17 @@ export function buildNamedTunnelArgs(config: NamedTunnelConfig): string[] {
 	if (config.tokenPath) {
 		return [...args, '--token-file', config.tokenPath];
 	}
-	return [...args, '--token', config.token ?? ''];
+	return args;
+}
+
+// Inline tokens go through the environment instead of argv: a command line is
+// visible to any local process enumeration, TUNNEL_TOKEN is not. A tokenPath
+// remains the recommended option and needs no environment at all.
+export function buildNamedTunnelEnv(config: NamedTunnelConfig): NodeJS.ProcessEnv {
+	if (config.tokenPath || !config.token) {
+		return {};
+	}
+	return { TUNNEL_TOKEN: config.token };
 }
 
 export class TunnelManager {
@@ -188,7 +198,8 @@ export class TunnelManager {
 		};
 		this.process = spawn('cloudflared', buildNamedTunnelArgs(this.namedConfig), {
 			windowsHide: true,
-			stdio: 'pipe'
+			stdio: 'pipe',
+			env: { ...globalThis.process.env, ...buildNamedTunnelEnv(this.namedConfig) }
 		});
 
 		const handleOutput = (chunk: Buffer) => {

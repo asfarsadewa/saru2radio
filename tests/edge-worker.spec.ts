@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import worker, { offlineResponse, toOriginUrl } from '../cloudflare/saru2radio-listener-edge.js';
+import worker, { isAllowedPublicPath, offlineResponse, toOriginUrl } from '../cloudflare/saru2radio-listener-edge.js';
 
 describe('saru2radio listener edge Worker', () => {
 	it('routes public requests to the hidden tunnel origin', () => {
@@ -97,6 +97,45 @@ describe('saru2radio listener edge Worker', () => {
 			tunnelUrl: 'https://saru2radio.com',
 			activeListeners: 3
 		});
+		vi.unstubAllGlobals();
+	});
+
+	it('refuses to proxy paths outside the listener surface', async () => {
+		const fetchMock = vi.fn(async () => new Response('ok', { status: 200 }));
+		vi.stubGlobal('fetch', fetchMock);
+
+		for (const path of ['/api/config', '/api/listener-messages', '/api/monitor/live.mp3', '/studio.html']) {
+			const response = await worker.fetch(new Request(`https://saru2radio.com${path}`));
+			expect(response.status).toBe(404);
+		}
+		expect(fetchMock).not.toHaveBeenCalled();
+		vi.unstubAllGlobals();
+	});
+
+	it('allows request-line paths and asset paths through the allowlist', () => {
+		expect(isAllowedPublicPath('/requests')).toBe(true);
+		expect(isAllowedPublicPath('/requests/abc123/feedback')).toBe(true);
+		expect(isAllowedPublicPath('/assets/listener-abc123.js')).toBe(true);
+		expect(isAllowedPublicPath('/status.json')).toBe(true);
+		expect(isAllowedPublicPath('/api/status')).toBe(false);
+		expect(isAllowedPublicPath('/requestsx')).toBe(false);
+	});
+
+	it('replaces client-supplied forwarded headers with the sanitized visitor IP', async () => {
+		const fetchMock = vi.fn(async (_input: unknown) => new Response('ok', { status: 200 }));
+		vi.stubGlobal('fetch', fetchMock);
+
+		await worker.fetch(
+			new Request('https://saru2radio.com/', {
+				headers: {
+					'cf-connecting-ip': '203.0.113.7',
+					'x-forwarded-for': '198.51.100.1, 192.0.2.1'
+				}
+			})
+		);
+
+		const originRequest = fetchMock.mock.calls[0]?.[0] as Request;
+		expect(originRequest.headers.get('x-forwarded-for')).toBe('203.0.113.7');
 		vi.unstubAllGlobals();
 	});
 });

@@ -319,6 +319,7 @@ It also:
 | `STUDIO_PORT` | `8011` | Local DJ studio and private API port. |
 | `PUBLIC_PORT` | `8012` | Local public listener facade port. |
 | `LISTENER_REQUEST_LIMIT` | `6` | Public listener requests allowed per client window. |
+| `LISTENER_REQUEST_GLOBAL_LIMIT` | `30` | Station-wide listener requests allowed per window; caps total AI DJ calls. |
 | `LISTENER_REQUEST_WINDOW_MS` | `60000` | Listener request rate-limit window in milliseconds. |
 | `RADIO_BITRATE_KBPS` | `128` | Browser encoder/source pacer bitrate target. |
 | `RADIO_SOUND_EXE` | `.tools\make-radio-sound\make-radio-sound.exe` | Retro audio preparation tool path. |

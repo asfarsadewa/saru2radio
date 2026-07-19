@@ -1,3 +1,4 @@
+import { rmsTimeDomainLevel } from './level';
 import { LiveMp3Encoder, TARGET_SAMPLE_RATE } from './liveMp3';
 import type { Track } from '../types';
 
@@ -758,14 +759,20 @@ export class StudioEngine {
 		}
 
 		this.callbacks?.onTrack(track);
+		// Claim the token before awaiting: a play-now landing while we fetch and
+		// decode must not let this stale continuation start on top of the new one.
+		const sourceToken = (this.sourceToken += 1);
 		const response = await fetch(`/api/tracks/${track.id}/cache`);
 		if (!response.ok) {
 			throw new Error(`Could not load cached track: ${track.fileName}`);
 		}
 
 		const buffer = await this.context.decodeAudioData(await response.arrayBuffer());
+		if (!this.running || !this.context || !this.musicGain || sourceToken !== this.sourceToken) {
+			return;
+		}
+
 		const source = this.context.createBufferSource();
-		const sourceToken = (this.sourceToken += 1);
 		source.buffer = buffer;
 		source.connect(this.musicGain);
 		source.onended = () => {
@@ -773,9 +780,8 @@ export class StudioEngine {
 				return;
 			}
 
-			const advanceBy = this.skipRequested ? 1 : 1;
 			this.skipRequested = false;
-			this.currentIndex = (this.currentIndex + advanceBy) % this.currentQueue.length;
+			this.currentIndex = (this.currentIndex + 1) % this.currentQueue.length;
 			this.currentSource = null;
 			void this.playCurrentTrack().catch((error) => this.callbacks?.onError(error.message));
 		};
@@ -863,13 +869,7 @@ export class StudioEngine {
 		}
 
 		const { analyser, analyserData } = this.micGraph;
-		analyser.getByteTimeDomainData(analyserData);
-		let sum = 0;
-		for (const value of analyserData) {
-			const normalized = (value - 128) / 128;
-			sum += normalized * normalized;
-		}
-		const rms = Math.sqrt(sum / analyserData.length);
+		const rms = rmsTimeDomainLevel(analyser, analyserData);
 		const level = (rms - MIC_METER_FLOOR) / (MIC_METER_CEILING - MIC_METER_FLOOR);
 		this.callbacks?.onMicLevel(Math.min(1, Math.max(0, Math.pow(level, 0.75))));
 		this.micLevelFrame = requestAnimationFrame(() => this.updateMicLevel());
@@ -880,13 +880,7 @@ export class StudioEngine {
 			return;
 		}
 
-		this.analyser.getByteTimeDomainData(this.analyserData);
-		let sum = 0;
-		for (const value of this.analyserData) {
-			const normalized = (value - 128) / 128;
-			sum += normalized * normalized;
-		}
-		const rms = Math.sqrt(sum / this.analyserData.length);
+		const rms = rmsTimeDomainLevel(this.analyser, this.analyserData);
 		this.callbacks?.onLevel(Math.min(1, Math.max(0.04, Math.pow(rms * 8, 0.7))));
 		this.levelFrame = requestAnimationFrame(() => this.updateLevel());
 	}
@@ -897,25 +891,8 @@ async function openSourceSocket(bitrateKbps: number): Promise<WebSocket> {
 	const socket = new WebSocket(`${protocol}//${window.location.host}/source`);
 	socket.binaryType = 'arraybuffer';
 
-	await new Promise<void>((resolve, reject) => {
-		const timeout = window.setTimeout(() => reject(new Error('Source bridge timed out.')), 5000);
-		socket.addEventListener(
-			'open',
-			() => {
-				window.clearTimeout(timeout);
-				socket.send(JSON.stringify({ type: 'start', bitrateKbps }));
-				resolve();
-			},
-			{ once: true }
-		);
-		socket.addEventListener(
-			'error',
-			() => {
-				window.clearTimeout(timeout);
-				reject(new Error('Could not open source bridge.'));
-			},
-			{ once: true }
-		);
+	await waitForSocketOpen(socket, 'Source bridge timed out.', 'Could not open source bridge.', () => {
+		socket.send(JSON.stringify({ type: 'start', bitrateKbps }));
 	});
 
 	return socket;
@@ -926,27 +903,37 @@ async function openTalkBreakSocket(): Promise<WebSocket> {
 	const socket = new WebSocket(`${protocol}//${window.location.host}/talk-break`);
 	socket.binaryType = 'arraybuffer';
 
-	await new Promise<void>((resolve, reject) => {
-		const timeout = window.setTimeout(() => reject(new Error('Talk break bridge timed out.')), 5000);
-		socket.addEventListener(
-			'open',
-			() => {
-				window.clearTimeout(timeout);
-				resolve();
-			},
-			{ once: true }
-		);
-		socket.addEventListener(
-			'error',
-			() => {
-				window.clearTimeout(timeout);
-				reject(new Error('Could not open talk break bridge.'));
-			},
-			{ once: true }
-		);
-	});
+	await waitForSocketOpen(socket, 'Talk break bridge timed out.', 'Could not open talk break bridge.');
 
 	return socket;
+}
+
+// On timeout the pending socket is closed and the listeners removed, so a
+// half-open bridge cannot linger and fire into nothing.
+function waitForSocketOpen(socket: WebSocket, timeoutMessage: string, errorMessage: string, onOpen?: () => void): Promise<void> {
+	return new Promise((resolve, reject) => {
+		const timeout = window.setTimeout(() => {
+			cleanup();
+			socket.close();
+			reject(new Error(timeoutMessage));
+		}, 5000);
+		const cleanup = () => {
+			window.clearTimeout(timeout);
+			socket.removeEventListener('open', handleOpen);
+			socket.removeEventListener('error', handleError);
+		};
+		const handleOpen = () => {
+			cleanup();
+			onOpen?.();
+			resolve();
+		};
+		const handleError = () => {
+			cleanup();
+			reject(new Error(errorMessage));
+		};
+		socket.addEventListener('open', handleOpen);
+		socket.addEventListener('error', handleError);
+	});
 }
 
 declare global {

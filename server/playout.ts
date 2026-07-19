@@ -221,7 +221,9 @@ export class DirectMp3Playout {
 					return;
 				}
 
-				this.source.write(buffer.subarray(0, bytesRead));
+				// Copy before writing: the source stream retains queued chunks by
+				// reference, and the next read() would overwrite this reused buffer.
+				this.source.write(Buffer.from(buffer.subarray(0, bytesRead)));
 				dueAt += (bytesRead / bytesPerSecond) * 1000;
 				await delay(calculatePlayoutDelayMs(dueAt, Date.now()));
 			}

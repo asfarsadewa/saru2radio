@@ -92,6 +92,39 @@ export function studioAllowedOrigins(studioPort: number): Set<string> {
 	return new Set([`http://127.0.0.1:${studioPort}`, `http://localhost:${studioPort}`, `http://[::1]:${studioPort}`]);
 }
 
+const STUDIO_HOSTNAMES = new Set(['127.0.0.1', 'localhost', '[::1]']);
+
+export function createStudioHostGuard(studioPort: number): RequestHandler {
+	return (request, response, next) => {
+		if (!isAllowedStudioHost(request.get('host'), studioPort)) {
+			response.status(403).type('text/plain').send('Forbidden host.');
+			return;
+		}
+
+		next();
+	};
+}
+
+// DNS-rebinding defense: a browser that is tricked into resolving an attacker
+// domain to 127.0.0.1 still sends that domain in the Host header, so rejecting
+// non-loopback Host values closes the read side of the studio API to websites
+// the DJ merely visits. The origin guard cannot cover this because it exempts
+// safe methods (GET/HEAD/OPTIONS).
+export function isAllowedStudioHost(host: string | string[] | undefined, studioPort: number): boolean {
+	const hostValue = firstHeaderValue(host);
+	if (!hostValue) {
+		// Non-browser local tools may omit Host on HTTP/1.0. Browsers always send it.
+		return true;
+	}
+
+	try {
+		const url = new URL(`http://${hostValue.trim()}`);
+		return STUDIO_HOSTNAMES.has(url.hostname.toLowerCase()) && (url.port || '80') === String(studioPort);
+	} catch {
+		return false;
+	}
+}
+
 export function createRateLimitMiddleware(
 	limiter: FixedWindowRateLimiter,
 	keyForRequest: (request: Request) => string

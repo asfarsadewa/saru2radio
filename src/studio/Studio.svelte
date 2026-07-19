@@ -48,6 +48,8 @@
 		updateStudioState
 	} from '../lib/api';
 	import { StudioEngine, type MicCaptureState, type MicColorMode } from '../lib/audio/studioEngine';
+	import { rmsTimeDomainLevel } from '../lib/audio/level';
+	import { TARGET_SAMPLE_RATE } from '../lib/audio/liveMp3';
 	import {
 		createPlaybackQueue,
 		cueTrackInQueue,
@@ -310,7 +312,16 @@
 		}
 	}
 
+	let statusPollInFlight = false;
+
+	// Guard against overlapping interval polls: without it, a slow response can
+	// resolve after a newer poll (or an optimistic action) and clobber fresher
+	// state with stale data.
 	async function refreshStatusOnly() {
+		if (statusPollInFlight) {
+			return;
+		}
+		statusPollInFlight = true;
 		try {
 			const [nextStatus, nextTunnel, nextNowPlaying, nextListenerMessages, nextAiDjActions] = await Promise.all([
 				getStatus(),
@@ -327,6 +338,8 @@
 			syncServerQueue(nextStatus);
 		} catch {
 			// Polling should not interrupt the booth.
+		} finally {
+			statusPollInFlight = false;
 		}
 	}
 
@@ -752,7 +765,14 @@
 		micLabel = '';
 		micMessage = '';
 		micMuted = false;
-		status = await stopBroadcast();
+		try {
+			status = await stopBroadcast();
+		} catch (error) {
+			// The engine is already torn down, so resync with the server instead
+			// of stranding the booth between on-air and off-air state.
+			setError(error);
+			await refreshStatusOnly();
+		}
 		activeBroadcastMode = null;
 		activeDirectProgram = null;
 		nowPlaying = null;
@@ -764,12 +784,16 @@
 		if (voiceProgramOnAir) {
 			return;
 		}
-		if (activeBroadcastMode === 'direct') {
-			status = await skipBroadcast();
-			nowPlaying = await getNowPlaying();
-			return;
+		try {
+			if (activeBroadcastMode === 'direct') {
+				status = await skipBroadcast();
+				nowPlaying = await getNowPlaying();
+				return;
+			}
+			engine.skip();
+		} catch (error) {
+			setError(error);
 		}
-		engine.skip();
 	}
 
 	function setMic(open: boolean) {
@@ -803,6 +827,30 @@
 			return;
 		}
 		endMicHold(event);
+	}
+
+	// Keyboard hold-to-talk: pointerdown/up only cover mouse and touch, so Space
+	// and Enter mirror the same hold gesture while the button has focus.
+	function handleMicKeyDown(event: KeyboardEvent) {
+		if (voiceProgramOnAir || event.repeat) {
+			return;
+		}
+		if (event.key !== ' ' && event.key !== 'Enter') {
+			return;
+		}
+		event.preventDefault();
+		setMic(true);
+	}
+
+	function handleMicKeyUp(event: KeyboardEvent) {
+		if (voiceProgramOnAir) {
+			return;
+		}
+		if (event.key !== ' ' && event.key !== 'Enter') {
+			return;
+		}
+		event.preventDefault();
+		setMic(false);
 	}
 
 	function handleMicClick() {
@@ -945,13 +993,7 @@
 			return;
 		}
 
-		directMonitorAnalyser.getByteTimeDomainData(directMonitorData);
-		let sum = 0;
-		for (const value of directMonitorData) {
-			const normalized = (value - 128) / 128;
-			sum += normalized * normalized;
-		}
-		const rms = Math.sqrt(sum / directMonitorData.length);
+		const rms = rmsTimeDomainLevel(directMonitorAnalyser, directMonitorData);
 		outputLevel = Math.min(1, Math.max(0.04, Math.pow(rms * 8, 0.7)));
 		directMonitorLevelFrame = window.requestAnimationFrame(updateDirectMonitorMeter);
 	}
@@ -1223,8 +1265,13 @@
 	}
 
 	async function copyListenerUrl() {
-		if (listenerUrl) {
+		if (!listenerUrl) {
+			return;
+		}
+		try {
 			await navigator.clipboard.writeText(listenerUrl);
+		} catch {
+			errorMessage = 'Could not copy the listener URL. Copy it manually.';
 		}
 	}
 
@@ -1349,7 +1396,7 @@
 				<span class:ready={activeListeners > 0} class:offline={activeListeners === 0} class="status-dot"></span>
 				{activeListenerLabel}
 			</span>
-			<span class="status-pill">{config?.bitrateKbps ?? 64} KBPS / 22.05 KHZ</span>
+			<span class="status-pill">{config?.bitrateKbps ?? 64} KBPS / {(TARGET_SAMPLE_RATE / 1000).toFixed(2)} KHZ</span>
 		</div>
 	</header>
 
@@ -1380,7 +1427,7 @@
 					type="checkbox"
 					bind:checked={libraryRecursive}
 					disabled={preparationActive || libraryScanning}
-					on:change={() => updateStudioState({ broadcastRecursive: libraryRecursive })}
+					on:change={() => void updateStudioState({ broadcastRecursive: libraryRecursive }).catch(setError)}
 				/>
 				<span>Include subfolders</span>
 			</label>
@@ -1496,7 +1543,7 @@
 				{/if}
 			</div>
 
-			<div class="track-list" aria-label="Track list">
+			<div class="track-list" role="region" aria-label="Track list">
 				{#each filteredTracks as track (track.id)}
 					<div
 						class:active={nowPlaying?.trackId === track.id}
@@ -1549,7 +1596,7 @@
 					<span class="eyebrow">frequency</span>
 					<strong>8.010 MHz</strong>
 				</div>
-				<div class="vu" aria-label="Output level">
+				<div class="vu" role="meter" aria-label="Output level" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(outputLevel * 100)}>
 					<div class="vu-needle"></div>
 					<div class="vu-scale">
 						<span>-30</span><span>-12</span><span>0</span>
@@ -1590,7 +1637,7 @@
 					<option value="mixer">DJ mixer</option>
 				</select>
 				{#if directModeSelected || directOnAir}
-					<div class="direct-program-toggle" aria-label="Direct program">
+					<div class="direct-program-toggle" role="group" aria-label="Direct program">
 						<button
 							class:active={visibleDirectProgram() === 'songs'}
 							type="button"
@@ -1728,6 +1775,9 @@
 					on:pointerdown={handleMicPointerDown}
 					on:pointerup={handleMicPointerUp}
 					on:pointercancel={handleMicPointerUp}
+					on:keydown={handleMicKeyDown}
+					on:keyup={handleMicKeyUp}
+					on:blur={() => setMic(false)}
 				>
 					<Mic />
 					{micButtonLabel}
@@ -1765,7 +1815,7 @@
 					<span class:ready={micReady && !micMuted} class:offline={!micReady || micMuted} class="status-dot"></span>
 					<span>{micStatusLabel}</span>
 				</div>
-				<div class="mic-meter" aria-label="Microphone signal">
+				<div class="mic-meter" role="meter" aria-label="Microphone signal" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(micLevel * 100)}>
 					<span></span>
 				</div>
 				<p>{micDetail}</p>
@@ -1814,7 +1864,7 @@
 	</section>
 
 	{#if busyMessage || errorMessage}
-		<footer class:error={Boolean(errorMessage)} class="toast">
+		<footer class:error={Boolean(errorMessage)} class="toast" role={errorMessage ? 'alert' : 'status'} aria-live="polite">
 			{errorMessage || busyMessage}
 		</footer>
 	{/if}
@@ -2767,6 +2817,13 @@
 
 		.request-panel-body {
 			grid-template-columns: 1fr;
+		}
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		.vu-needle,
+		.mic-meter span {
+			transition: none;
 		}
 	}
 </style>

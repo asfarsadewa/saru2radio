@@ -154,6 +154,27 @@ describe('AiDjRequestAgent', () => {
 		});
 	});
 
+	it('survives the action log being cleared while a request is in flight', async () => {
+		const store = new AiDjActionStore();
+		const tracks = [createTrack('track-1', 'Neon Rain', 'Adi')];
+		const agent = createAiDjAgent({
+			actions: store,
+			client: fakeClient({ decision: 'play', trackId: 'track-1', confidence: 0.95, reason: 'Exact match.' }),
+			model: 'gpt-5.6',
+			getReadyTracks: () => tracks,
+			isDirectSongsActive: () => true,
+			scheduleTrack: async () => ({ disposition: 'queued_next', queuePosition: 1 })
+		});
+
+		agent.enqueue(createMessage('Please play Neon Rain'));
+		// The DJ clears the action log before the queued classification runs; the
+		// in-flight update then has nothing to mark failed and must not take the
+		// process down with an unhandled rejection.
+		store.clear();
+
+		await expect(agent.waitForIdle()).resolves.toBeUndefined();
+	});
+
 	it('randomly queues one available track for an artist-only request', async () => {
 		const store = new AiDjActionStore();
 		const tracks = [

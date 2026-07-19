@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { FixedWindowRateLimiter, isAllowedStudioOrigin } from '../server/security.js';
+import { FixedWindowRateLimiter, isAllowedStudioHost, isAllowedStudioOrigin } from '../server/security.js';
 
 describe('studio origin guard', () => {
 	it('allows the local studio origins and non-browser local tools', () => {
@@ -12,6 +12,24 @@ describe('studio origin guard', () => {
 		expect(isAllowedStudioOrigin('https://example.com', 8011)).toBe(false);
 		expect(isAllowedStudioOrigin('http://127.0.0.1:8012', 8011)).toBe(false);
 		expect(isAllowedStudioOrigin('null', 8011)).toBe(false);
+	});
+});
+
+describe('studio host guard', () => {
+	it('allows loopback hosts on the studio port and host-less local tools', () => {
+		expect(isAllowedStudioHost('127.0.0.1:8011', 8011)).toBe(true);
+		expect(isAllowedStudioHost('localhost:8011', 8011)).toBe(true);
+		expect(isAllowedStudioHost('[::1]:8011', 8011)).toBe(true);
+		expect(isAllowedStudioHost(undefined, 8011)).toBe(true);
+	});
+
+	it('rejects foreign hosts, lookalikes, and wrong ports', () => {
+		// The DNS-rebinding case: a browser resolves an attacker domain to
+		// 127.0.0.1 but keeps sending the attacker domain in Host.
+		expect(isAllowedStudioHost('evil.example.com:8011', 8011)).toBe(false);
+		expect(isAllowedStudioHost('127.0.0.1.evil.example.com:8011', 8011)).toBe(false);
+		expect(isAllowedStudioHost('127.0.0.1:8012', 8011)).toBe(false);
+		expect(isAllowedStudioHost('not a host', 8011)).toBe(false);
 	});
 });
 

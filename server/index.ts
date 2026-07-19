@@ -23,8 +23,10 @@ import { DirectMp3Playout } from './playout.js';
 import { PreparationBusyError, PreparationManager } from './preparation.js';
 import {
 	createRateLimitMiddleware,
+	createStudioHostGuard,
 	createStudioOriginGuard,
 	FixedWindowRateLimiter,
+	isAllowedStudioHost,
 	isAllowedStudioOrigin,
 	listenerRequestKey,
 	rejectForbiddenUpgrade
@@ -45,11 +47,15 @@ const STUDIO_PORT = Number(process.env.STUDIO_PORT ?? 8011);
 const PUBLIC_PORT = Number(process.env.PUBLIC_PORT ?? 8012);
 const BITRATE_KBPS = Number(process.env.RADIO_BITRATE_KBPS ?? 128);
 const LISTENER_REQUEST_LIMIT = Number(process.env.LISTENER_REQUEST_LIMIT ?? 6);
+const LISTENER_REQUEST_GLOBAL_LIMIT = Number(process.env.LISTENER_REQUEST_GLOBAL_LIMIT ?? 30);
 const LISTENER_REQUEST_WINDOW_MS = Number(process.env.LISTENER_REQUEST_WINDOW_MS ?? 60_000);
 const AI_DJ_ENABLED = process.env.AI_DJ_ENABLED?.toLowerCase() !== 'false';
 const AI_DJ_MODEL = process.env.OPENAI_MODEL?.trim() || 'gpt-5.6';
 const AI_DJ_MIN_CONFIDENCE = Number(process.env.AI_DJ_MIN_CONFIDENCE ?? 0.72);
 const SOURCE_RECONNECT_DELAY_MS = 500;
+const SOURCE_RECOVERY_DELAY_MS = 1_000;
+const SOURCE_RECOVERY_MAX_ATTEMPTS = 5;
+const SOURCE_RECOVERY_STABLE_MS = 5_000;
 
 let runtime: IcecastRuntimeConfig;
 let status: BroadcastStatus;
@@ -83,9 +89,17 @@ async function main() {
 	cloudflaredAvailable = await hasCloudflared();
 	await restoreBroadcastLibrary();
 	status = createStatus();
-	source = new IcecastSourceConnection(runtime, STATION_NAME, (connected) => {
-		status.sourceConnected = connected;
-	});
+	source = new IcecastSourceConnection(
+		runtime,
+		STATION_NAME,
+		(connected) => {
+			status.sourceConnected = connected;
+			if (connected) {
+				scheduleSourceRecoveryReset();
+			}
+		},
+		handleSourceConnectionLost
+	);
 	playout = new DirectMp3Playout(source, {
 		onTrack: (track) => {
 			aiDjQueue.markTrackStarted(track.id);
@@ -144,6 +158,7 @@ async function main() {
 function createStudioApp() {
 	const app = express();
 	app.disable('x-powered-by');
+	app.use(createStudioHostGuard(STUDIO_PORT));
 	app.use('/api', createStudioOriginGuard(STUDIO_PORT));
 	app.use(express.json({ limit: '1mb' }));
 	app.use(express.static(DIST_DIR));
@@ -392,6 +407,12 @@ function createPublicApp() {
 		limit: LISTENER_REQUEST_LIMIT,
 		windowMs: LISTENER_REQUEST_WINDOW_MS
 	});
+	// Per-client keys are spoofable via forwarded headers, so a station-wide
+	// bucket caps total accepted requests (and therefore paid AI DJ calls).
+	const listenerRequestGlobalLimiter = new FixedWindowRateLimiter({
+		limit: LISTENER_REQUEST_GLOBAL_LIMIT,
+		windowMs: LISTENER_REQUEST_WINDOW_MS
+	});
 	app.disable('x-powered-by');
 	app.use('/assets', express.static(path.join(DIST_DIR, 'assets'), { immutable: true, maxAge: '1h' }));
 
@@ -400,6 +421,7 @@ function createPublicApp() {
 	app.get('/now-playing.json', (_request, response) => response.json(nowPlaying));
 	app.post(
 		'/requests',
+		createRateLimitMiddleware(listenerRequestGlobalLimiter, () => 'global'),
 		createRateLimitMiddleware(listenerRequestLimiter, listenerRequestKey),
 		express.json({ limit: '8kb' }),
 		(request, response) => {
@@ -520,7 +542,10 @@ function attachStudioSockets(server: ReturnType<typeof createServer>) {
 			socket.destroy();
 			return;
 		}
-		if (!isAllowedStudioOrigin(request.headers.origin, STUDIO_PORT)) {
+		if (
+			!isAllowedStudioHost(request.headers.host, STUDIO_PORT) ||
+			!isAllowedStudioOrigin(request.headers.origin, STUDIO_PORT)
+		) {
 			rejectForbiddenUpgrade(socket);
 			return;
 		}
@@ -547,7 +572,11 @@ function attachSourceSocket(socketServer: WebSocketServer) {
 		};
 		socket.on('message', (data, isBinary) => {
 			if (!isBinary) {
-				const message = JSON.parse(data.toString()) as { type?: string; bitrateKbps?: number };
+				const message = parseSocketMessage(data.toString());
+				if (!message) {
+					socket.close(1003, 'Expected a JSON text message.');
+					return;
+				}
 				if (message.type === 'start') {
 					if (preparation.isActive()) {
 						socket.close(1013, 'Radio-copy preparation is running.');
@@ -604,7 +633,11 @@ function attachTalkBreakSocket(socketServer: WebSocketServer) {
 
 		socket.on('message', (data, isBinary) => {
 			if (!isBinary) {
-				const message = JSON.parse(data.toString()) as { type?: string; bitrateKbps?: number };
+				const message = parseSocketMessage(data.toString());
+				if (!message) {
+					socket.close(1003, 'Expected a JSON text message.');
+					return;
+				}
 				if (message.type === 'begin') {
 					if (!status.onAir || !playout.isRunning()) {
 						return;
@@ -758,6 +791,68 @@ async function restoreBroadcastLibrary(): Promise<void> {
 
 function wait(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+let sourceRecoveryAttempts = 0;
+let sourceRecoveryTimer: ReturnType<typeof setTimeout> | null = null;
+let sourceStableTimer: ReturnType<typeof setTimeout> | null = null;
+
+// The Icecast source connection can die mid-broadcast (Icecast restart, stalled
+// socket). Without recovery the playout loop would keep streaming into the void
+// while the booth shows ON AIR, so reconnect a few times and then, rather than
+// broadcast silence forever, stop the program and surface the failure.
+function handleSourceConnectionLost(): void {
+	if (sourceRecoveryTimer || !sourceAudioWanted()) {
+		return;
+	}
+	console.warn('[icecast] source connection lost; scheduling reconnect.');
+	sourceRecoveryTimer = setTimeout(() => {
+		sourceRecoveryTimer = null;
+		if (!sourceAudioWanted()) {
+			sourceRecoveryAttempts = 0;
+			return;
+		}
+		sourceRecoveryAttempts += 1;
+		if (sourceRecoveryAttempts > SOURCE_RECOVERY_MAX_ATTEMPTS) {
+			console.error('[icecast] source connection could not be restored; going off air.');
+			sourceRecoveryAttempts = 0;
+			playout.stop();
+			markOffAir();
+			return;
+		}
+		console.warn(`[icecast] reconnect attempt ${sourceRecoveryAttempts}/${SOURCE_RECOVERY_MAX_ATTEMPTS}`);
+		// If this attempt fails too, handleSourceConnectionLost runs again and
+		// schedules the next one.
+		source.connect();
+	}, SOURCE_RECOVERY_DELAY_MS);
+}
+
+// A connection that stays up for a while earns a fresh reconnect budget, so a
+// flaky network does not eventually exhaust the attempts after healthy gaps.
+function scheduleSourceRecoveryReset(): void {
+	if (sourceStableTimer) {
+		clearTimeout(sourceStableTimer);
+	}
+	sourceStableTimer = setTimeout(() => {
+		sourceStableTimer = null;
+		sourceRecoveryAttempts = 0;
+	}, SOURCE_RECOVERY_STABLE_MS);
+}
+
+function sourceAudioWanted(): boolean {
+	return Boolean(status?.onAir && (playout?.isRunning() || browserSourceSessions.hasActive()));
+}
+
+function parseSocketMessage(raw: string): { type?: string; bitrateKbps?: number } | null {
+	try {
+		const parsed: unknown = JSON.parse(raw);
+		if (parsed === null || typeof parsed !== 'object') {
+			return null;
+		}
+		return parsed as { type?: string; bitrateKbps?: number };
+	} catch {
+		return null;
+	}
 }
 
 function markOffAir(): void {

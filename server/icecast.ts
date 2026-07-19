@@ -106,6 +106,8 @@ export async function isIcecastReachable(runtime: IcecastRuntimeConfig): Promise
 	});
 }
 
+const MAX_SOURCE_BUFFERED_BYTES = 8 * 1024 * 1024;
+
 export class IcecastSourceConnection {
 	private request: http.ClientRequest | null = null;
 	private connected = false;
@@ -114,7 +116,8 @@ export class IcecastSourceConnection {
 	constructor(
 		private readonly runtime: IcecastRuntimeConfig,
 		private readonly stationName: string,
-		private readonly onState: (connected: boolean) => void
+		private readonly onState: (connected: boolean) => void,
+		private readonly onLost?: () => void
 	) {}
 
 	connect(): void {
@@ -162,6 +165,11 @@ export class IcecastSourceConnection {
 			return;
 		}
 		this.request.write(chunk);
+		if (this.request.writableLength > MAX_SOURCE_BUFFERED_BYTES) {
+			// Icecast is not draining the socket; drop the connection so the
+			// loss-recovery path kicks in instead of buffering audio in memory.
+			this.request.destroy();
+		}
 	}
 
 	disconnect(): void {
@@ -185,6 +193,9 @@ export class IcecastSourceConnection {
 		}
 		this.request = null;
 		this.setConnected(false);
+		// Only reached on unexpected loss (error, close, rejected response);
+		// intentional disconnect() calls null the request first and never land here.
+		this.onLost?.();
 	}
 
 	private setConnected(connected: boolean): void {

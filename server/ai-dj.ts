@@ -165,7 +165,13 @@ export class AiDjRequestAgent {
 		this.processing = this.processing
 			.then(() => this.process(message, action.id))
 			.catch((error) => {
-				this.failAction(action.id, error);
+				try {
+					this.failAction(action.id, error);
+				} catch {
+					// The action log may have been cleared while this request was in flight;
+					// there is nothing left to mark as failed, so swallow the error instead
+					// of leaving a rejected promise nobody awaits.
+				}
 			});
 		return action;
 	}

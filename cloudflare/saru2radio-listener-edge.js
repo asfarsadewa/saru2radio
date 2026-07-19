@@ -3,10 +3,32 @@ const TUNNEL_ORIGIN = 'https://origin.saru2radio.com';
 const ORIGIN_TIMEOUT_MS = 5000;
 const FALLBACK_STATUSES = new Set([502, 503, 504, 530]);
 
+// Only the listener surface is exposed through the front door. Anything else
+// gets the branded 404, so a tunnel ever pointed at the wrong port cannot
+// leak the studio API to the public internet.
+const ALLOWED_EXACT_PATHS = new Set([
+	'/',
+	'/index.html',
+	'/status.json',
+	'/now-playing.json',
+	'/requests',
+	'/live.mp3',
+	'/favicon.ico'
+]);
+const ALLOWED_PATH_PREFIXES = ['/requests/', '/assets/'];
+
 export default {
 	async fetch(request) {
 		const url = new URL(request.url);
-		const originRequest = new Request(toOriginUrl(url), request);
+		if (!isAllowedPublicPath(url.pathname)) {
+			return offlineResponse(url);
+		}
+		const originRequest = new Request(toOriginUrl(url), {
+			method: request.method,
+			headers: sanitizedForwardHeaders(request.headers),
+			body: request.method === 'GET' || request.method === 'HEAD' ? null : request.body,
+			redirect: 'manual'
+		});
 		const controller = new AbortController();
 		const timeout = setTimeout(() => controller.abort(), ORIGIN_TIMEOUT_MS);
 
@@ -31,6 +53,27 @@ export default {
 		}
 	}
 };
+
+export function isAllowedPublicPath(pathname) {
+	if (ALLOWED_EXACT_PATHS.has(pathname)) {
+		return true;
+	}
+	return ALLOWED_PATH_PREFIXES.some((prefix) => pathname.startsWith(prefix));
+}
+
+// Forward only a trustworthy client identity: the visitor IP Cloudflare has
+// already sanitized for us, never a client-supplied X-Forwarded-For chain,
+// which the facade's rate limiter would otherwise take at face value.
+function sanitizedForwardHeaders(headers) {
+	const forwarded = new Headers(headers);
+	const visitorIp = headers.get('cf-connecting-ip');
+	if (visitorIp) {
+		forwarded.set('x-forwarded-for', visitorIp);
+	} else {
+		forwarded.delete('x-forwarded-for');
+	}
+	return forwarded;
+}
 
 async function publicStatusResponse(response) {
 	const status = await response.json();

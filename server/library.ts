@@ -429,13 +429,24 @@ async function findBroadcastAudioFiles(directory: string, options: Required<Scan
 }
 
 async function resolveManifestPlayPath(entry: ManifestTrack, tracksDirectory: string): Promise<string | null> {
-	const candidates = [entry.cachePath, path.join(tracksDirectory, path.basename(entry.cachePath))].filter(Boolean);
+	const cacheRoot = path.resolve(tracksDirectory);
+	// Manifest files travel inside downloaded music folders, so treat their paths
+	// as untrusted: only ever serve files contained in the cache's tracks directory.
+	const candidates = [entry.cachePath, path.join(tracksDirectory, path.basename(entry.cachePath))]
+		.filter(Boolean)
+		.map((candidate) => path.resolve(candidate))
+		.filter((candidate) => isPathInsideDirectory(cacheRoot, candidate));
 	for (const candidate of candidates) {
 		if (await fileExists(candidate)) {
 			return candidate;
 		}
 	}
 	return null;
+}
+
+function isPathInsideDirectory(root: string, target: string): boolean {
+	const relative = path.relative(path.resolve(root), path.resolve(target));
+	return relative !== '' && !relative.startsWith('..') && !path.isAbsolute(relative);
 }
 
 async function readTrackMetadata(filePath: string): Promise<{ title: string; artist: string; duration: number | null }> {
@@ -482,9 +493,7 @@ async function runRadioTool(exePath: string, input: string, output: string, seed
 function assertSafeCacheOutput(track: Track, tracksDirectory: string): void {
 	const source = path.resolve(track.sourcePath);
 	const output = path.resolve(track.cachePath);
-	const cacheRoot = path.resolve(tracksDirectory);
-	const relative = path.relative(cacheRoot, output);
-	const outputInsideCache = relative !== '' && !relative.startsWith('..') && !path.isAbsolute(relative);
+	const outputInsideCache = isPathInsideDirectory(tracksDirectory, output);
 
 	if (!outputInsideCache || output.toLowerCase() === source.toLowerCase()) {
 		throw new Error(`Unsafe radio-copy output rejected for ${track.fileName}.`);
