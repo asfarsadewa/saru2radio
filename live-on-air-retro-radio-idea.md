@@ -1,5 +1,7 @@
 # Live On-Air Retro Radio Idea
 
+> **Historical note:** this is the original brainstorm that kicked off the project. The shipped app is documented in [README.md](README.md) and has outgrown several details below — it now has a listener request line with an AI DJ, streams at 128 kbps, and caches under `.saru2radio-cache`. Keep this file for design rationale (the sound goals and cost model still hold); trust the README for actual behavior.
+
 Working names: `jadisiaran`, `udaratua`, `jadionair`
 
 ## One-Line Concept

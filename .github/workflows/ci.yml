@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Type-check
+        run: bun run check
+
+      - name: Unit tests
+        run: bun run test:unit
+
+      - name: Build
+        run: bun run build
+
+      # The e2e suite boots the real server but skips the real Icecast binary
+      # by default (see playwright.config.ts), so it runs anywhere.
+      - name: Install Playwright browser
+        run: bunx playwright install --with-deps chromium
+
+      - name: E2E tests
+        run: bun run test:e2e

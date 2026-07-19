@@ -6,6 +6,7 @@ playwright-report/
 test-results/
 .saru2radio/
 .tools/
+.codex-runtime/
 .env
 *.local
 tools/make-radio-sound/.venv/

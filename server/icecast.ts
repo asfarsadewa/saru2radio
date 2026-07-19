@@ -49,6 +49,13 @@ export async function ensureIcecastRuntime(): Promise<IcecastRuntimeConfig> {
 }
 
 export async function startIcecast(runtime: IcecastRuntimeConfig): Promise<void> {
+	if (process.env.SARU2RADIO_SKIP_ICECAST === '1') {
+		// Test environments (e2e, CI) never touch the real stream path, so they
+		// can run the full server without a local Icecast binary.
+		console.log('[icecast] SARU2RADIO_SKIP_ICECAST=1; running without a local Icecast process.');
+		return;
+	}
+
 	if (await isIcecastReachable(runtime)) {
 		return;
 	}

@@ -260,6 +260,8 @@ export class AiDjRequestAgent {
 	}
 }
 
+const DEFAULT_OPENAI_TIMEOUT_MS = 45_000;
+
 export function createAiDjAgent(options: {
 	actions: AiDjActionStore;
 	getReadyTracks: () => Track[];
@@ -269,16 +271,23 @@ export function createAiDjAgent(options: {
 	model?: string;
 	enabled?: boolean;
 	minConfidence?: number;
+	openAiTimeoutMs?: number;
 	client?: AiDjOpenAiClient | null;
 	random?: () => number;
 }): AiDjRequestAgent {
 	const model = options.model?.trim() || DEFAULT_MODEL;
 	const enabled = options.enabled ?? true;
 	const minConfidence = normalizeMinConfidence(options.minConfidence ?? DEFAULT_MIN_CONFIDENCE);
+	// Bound each classification attempt: the agent processes requests serially,
+	// so one hung OpenAI call would otherwise stall every later listener request.
 	const client =
 		options.client === undefined
 			? options.apiKey
-				? (new OpenAI({ apiKey: options.apiKey }) as AiDjOpenAiClient)
+				? (new OpenAI({
+						apiKey: options.apiKey,
+						timeout: options.openAiTimeoutMs ?? DEFAULT_OPENAI_TIMEOUT_MS,
+						maxRetries: 1
+					}) as AiDjOpenAiClient)
 				: null
 			: options.client;
 

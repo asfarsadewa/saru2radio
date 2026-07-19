@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import type { PreparationState } from '../src/lib/types.js';
+import type { PreparationState } from '../../src/lib/types.js';
 
 const STUDIO_URL = `http://127.0.0.1:${process.env.TEST_STUDIO_PORT ?? process.env.STUDIO_PORT ?? 18_011}`;
 const PUBLIC_URL = `http://127.0.0.1:${process.env.TEST_PUBLIC_PORT ?? process.env.PUBLIC_PORT ?? 18_012}`;

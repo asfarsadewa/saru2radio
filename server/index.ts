@@ -17,23 +17,16 @@ import {
 import { LibraryManager, resolveRadioToolPath } from './library.js';
 import { ActiveListenerCounter } from './listener-count.js';
 import { DIST_DIR } from './paths.js';
-import {
-	ListenerMessageStore,
-	ListenerMessageValidationError,
-	validateListenerMessageInput,
-	type ValidatedListenerMessageInput
-} from './listener-messages.js';
-import { feedbackForAiDjAction, ListenerFeedbackStore } from './listener-feedback.js';
+import { ListenerMessageStore } from './listener-messages.js';
+import { ListenerFeedbackStore } from './listener-feedback.js';
 import { DirectMp3Playout } from './playout.js';
 import { PreparationBusyError, PreparationManager } from './preparation.js';
+import { createPublicApp } from './public-app.js';
 import {
-	createRateLimitMiddleware,
 	createStudioHostGuard,
 	createStudioOriginGuard,
-	FixedWindowRateLimiter,
 	isAllowedStudioHost,
 	isAllowedStudioOrigin,
-	listenerRequestKey,
 	rejectForbiddenUpgrade
 } from './security.js';
 import { BrowserSourceSessionGuard } from './source-session.js';
@@ -141,6 +134,7 @@ async function main() {
 		model: AI_DJ_MODEL,
 		enabled: AI_DJ_ENABLED,
 		minConfidence: AI_DJ_MIN_CONFIDENCE,
+		openAiTimeoutMs: process.env.OPENAI_TIMEOUT_MS ? Number(process.env.OPENAI_TIMEOUT_MS) : undefined,
 		getReadyTracks: currentReadyTracks,
 		isDirectSongsActive,
 		scheduleTrack: (track) => aiDjQueue.schedule(track)
@@ -153,7 +147,20 @@ async function main() {
 		console.log(`saru2radio studio: http://127.0.0.1:${STUDIO_PORT}`);
 	});
 
-	const publicApp = createPublicApp();
+	const publicApp = createPublicApp({
+		distDir: DIST_DIR,
+		listenerRequestLimit: LISTENER_REQUEST_LIMIT,
+		listenerRequestGlobalLimit: LISTENER_REQUEST_GLOBAL_LIMIT,
+		listenerRequestWindowMs: LISTENER_REQUEST_WINDOW_MS,
+		getStatus: () => status,
+		getNowPlaying: () => nowPlaying,
+		getPublicStatus: publicStatus,
+		listenerMessages,
+		listenerFeedback,
+		aiDj,
+		aiDjActions,
+		proxyLiveStream: (request, response) => proxyLiveStream(request, response, { countActiveListener: true })
+	});
 	publicApp.listen(PUBLIC_PORT, '127.0.0.1', () => {
 		console.log(`saru2radio listener facade: http://127.0.0.1:${PUBLIC_PORT}`);
 	});
@@ -375,16 +382,7 @@ function createStudioApp() {
 		browserSourceSessions.invalidate();
 		aiDjQueue.reset();
 		playout.stop();
-		source.disconnect();
-		activeListeners.reset();
-		status = createStatus();
-		nowPlaying = {
-			trackId: null,
-			title: 'Off air',
-			artist: STATION_NAME,
-			startedAt: null,
-			duration: null
-		};
+		markOffAir();
 		response.json(currentStudioStatus());
 	});
 
@@ -405,83 +403,6 @@ function createStudioApp() {
 		response.status(500).send(error instanceof Error ? error.message : 'Unexpected server error.');
 	});
 
-	return app;
-}
-
-function createPublicApp() {
-	const app = express();
-	const listenerRequestLimiter = new FixedWindowRateLimiter({
-		limit: LISTENER_REQUEST_LIMIT,
-		windowMs: LISTENER_REQUEST_WINDOW_MS
-	});
-	// Per-client keys are spoofable via forwarded headers, so a station-wide
-	// bucket caps total accepted requests (and therefore paid AI DJ calls).
-	const listenerRequestGlobalLimiter = new FixedWindowRateLimiter({
-		limit: LISTENER_REQUEST_GLOBAL_LIMIT,
-		windowMs: LISTENER_REQUEST_WINDOW_MS
-	});
-	app.disable('x-powered-by');
-	app.use('/assets', express.static(path.join(DIST_DIR, 'assets'), { immutable: true, maxAge: '1h' }));
-
-	app.get('/', (_request, response) => response.sendFile(path.join(DIST_DIR, 'listener.html')));
-	app.get('/status.json', (request, response) => response.json(publicStatus(request)));
-	app.get('/now-playing.json', (_request, response) => response.json(nowPlaying));
-	app.post(
-		'/requests',
-		createRateLimitMiddleware(listenerRequestLimiter, listenerRequestKey),
-		express.json({ limit: '8kb' }),
-		(request, response, next) => {
-			if (!status.onAir) {
-				response.status(409).type('text/plain').send('The station is off air.');
-				return;
-			}
-
-			try {
-				response.locals.listenerMessageInput = validateListenerMessageInput(request.body ?? {});
-				next();
-			} catch (error) {
-				if (error instanceof ListenerMessageValidationError) {
-					response.status(400).type('text/plain').send(error.message);
-					return;
-				}
-				next(error);
-			}
-		},
-		createRateLimitMiddleware(listenerRequestGlobalLimiter, () => 'global'),
-		(request, response) => {
-			try {
-				const listenerMessage = listenerMessages.create(
-					response.locals.listenerMessageInput as ValidatedListenerMessageInput
-				);
-				const feedbackToken = listenerFeedback.issue(listenerMessage.id);
-				try {
-					aiDj.enqueue(listenerMessage);
-				} catch (error) {
-					console.error(`[ai-dj] ${error instanceof Error ? error.message : error}`);
-				}
-				response.set('cache-control', 'no-store');
-				response.status(201).json({ ...listenerMessage, feedbackToken });
-			} catch (error) {
-				if (error instanceof ListenerMessageValidationError) {
-					response.status(400).type('text/plain').send(error.message);
-					return;
-				}
-				throw error;
-			}
-		}
-	);
-	app.get('/requests/:id/feedback', (request, response) => {
-		const token = request.get('x-saru2radio-request-token') ?? '';
-		if (!listenerFeedback.authorize(request.params.id, token)) {
-			response.status(404).type('text/plain').send('Not found');
-			return;
-		}
-
-		response.set('cache-control', 'no-store');
-		response.json(feedbackForAiDjAction(aiDjActions.findByRequestId(request.params.id)));
-	});
-	app.get('/live.mp3', (request, response) => proxyLiveStream(request, response, { countActiveListener: true }));
-	app.use((_request, response) => response.status(404).type('text/plain').send('Not found'));
 	return app;
 }
 

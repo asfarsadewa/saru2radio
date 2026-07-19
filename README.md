@@ -49,7 +49,7 @@ There are two broadcast paths:
 
 - Windows/PowerShell is the primary tested environment.
 - Node.js compatible with the current dependencies.
-- npm.
+- bun (the repo pins dependencies with `bun.lock`).
 - Icecast for Windows extracted under `.tools/icecast`.
 - Optional: Python 3 for building the vendored `make-radio-sound.exe` used to prepare retro `.radio.mp3` copies.
 - Optional: `cloudflared` for public tunnel control.
@@ -70,25 +70,25 @@ Expected Icecast path:
 ## Install
 
 ```powershell
-npm install
+bun install
 ```
 
 Build the vendored retro-audio preparation tool:
 
 ```powershell
-npm run setup:radio-sound
+bun run setup:radio-sound
 ```
 
 Build the browser bundles:
 
 ```powershell
-npm run build
+bun run build
 ```
 
 Start the local station services:
 
 ```powershell
-npm run start
+bun run start
 ```
 
 Open:
@@ -102,7 +102,7 @@ To run on different ports:
 ```powershell
 $env:STUDIO_PORT='18111'
 $env:PUBLIC_PORT='18112'
-npm run start
+bun run start
 ```
 
 ## Preparing Music
@@ -118,7 +118,7 @@ By default the app looks for the tool at:
 Build that executable from the vendored source:
 
 ```powershell
-npm run setup:radio-sound
+bun run setup:radio-sound
 ```
 
 You can override it:
@@ -139,19 +139,19 @@ While the station is on air, **Prepare** safely processes only tracks that do no
 The equivalent local command is:
 
 ```powershell
-npm run prepare:radio -- "C:\path\to\music"
+bun run prepare:radio -- "C:\path\to\music"
 ```
 
 Prepare recursively:
 
 ```powershell
-npm run prepare:radio -- "C:\path\to\music" --recursive
+bun run prepare:radio -- "C:\path\to\music" --recursive
 ```
 
 Strict mode stops with a non-zero exit code if any track fails:
 
 ```powershell
-npm run prepare:radio -- "C:\path\to\music" --strict
+bun run prepare:radio -- "C:\path\to\music" --strict
 ```
 
 Prepared output is written next to the source folder:
@@ -168,7 +168,7 @@ In the Studio, use the original folder that contains `.saru2radio-cache` when pr
 
 ## DJ Studio Workflow
 
-1. Start the server with `npm run start`.
+1. Start the server with `bun run start`.
 2. Open `http://127.0.0.1:8011/`.
 3. Choose or type a broadcast folder.
 4. Use **Scan**.
@@ -178,7 +178,7 @@ In the Studio, use the original folder that contains `.saru2radio-cache` when pr
 8. Share the listener URL, or start the tunnel if configured.
 9. Use **Skip**, **Shuffle/Ordered**, click a ready track to play it now, or use its **Next** control to place it immediately after the current song.
 10. Hold the mic button for a direct talk break. In direct mode the song pauses while the mic break is live.
-10. Click **OFF AIR** when finished.
+11. Click **OFF AIR** when finished.
 
 For a voice-only program, keep **Direct songs** selected, switch the Direct submode from **Songs** to **Voice**, then click **ON AIR**. The mic button latches on/off, and the ambient bed control sets the generated background level.
 
@@ -326,6 +326,7 @@ It also:
 | `SARU2RADIO_TUNNEL_CONFIG` | `.saru2radio/cloudflare-named-tunnel.json` | Optional named Cloudflare tunnel config. |
 | `OPENAI_API_KEY` | unset | Local OpenAI key for the server-side AI DJ request agent. |
 | `OPENAI_MODEL` | `gpt-5.6` | AI DJ model used for request classification. |
+| `OPENAI_TIMEOUT_MS` | `45000` | Per-attempt timeout for AI DJ classification calls; protects the serial request queue from a hung call. |
 | `AI_DJ_ENABLED` | `true` | Set to `false` to keep listener requests manual-only. |
 | `AI_DJ_MIN_CONFIDENCE` | `0.72` | Minimum model confidence required before the AI DJ schedules a matched track. |
 
@@ -340,34 +341,34 @@ Do not commit `.saru2radio`.
 ## Useful Commands
 
 ```powershell
-npm run start
+bun run start
 ```
 
 Start the local server and Icecast integration.
 
 ```powershell
-npm run dev
+bun run dev
 ```
 
 Build once, then start the local server.
 
 ```powershell
-npm run prepare:radio -- "C:\path\to\music"
+bun run prepare:radio -- "C:\path\to\music"
 ```
 
 Prepare retro radio MP3 copies.
 
 ```powershell
-npm run check
-npm run test:unit
-npm run build
-npm run test:e2e
+bun run check
+bun run test:unit
+bun run build
+bun run test:e2e
 ```
 
 Run the validation steps used during development.
 
 ```powershell
-npm run test
+bun run test
 ```
 
 Run the full validation sequence.
@@ -376,7 +377,7 @@ Run the full validation sequence.
 
 - Frontend entrypoints are `studio.html` and `listener.html`.
 - Vite builds both Svelte apps into `dist`.
-- The Playwright e2e suite starts or reuses `http://127.0.0.1:8011/`.
+- The Playwright e2e suite builds `dist/`, then boots its own server on ports `18011`/`18012` (override with `TEST_STUDIO_PORT`/`TEST_PUBLIC_PORT`). It runs without a local Icecast binary by default; set `SARU2RADIO_E2E_REAL_ICECAST=1` to exercise the real Icecast integration.
 - Unit tests include server helpers, tunnel config, Cloudflare Worker behavior, MP3 playout pacing, and listener message validation.
 - `Direct songs` mode is the default UX path for stable streaming.
 - Listener messages are not persisted and are cleared on server restart.
@@ -411,7 +412,7 @@ Also check that port `8010` is free or already serving Icecast.
 Build the vendored tool:
 
 ```powershell
-npm run setup:radio-sound
+bun run setup:radio-sound
 ```
 
 Or set `RADIO_SOUND_EXE` to a custom `make-radio-sound.exe` path.

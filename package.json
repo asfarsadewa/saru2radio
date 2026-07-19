@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "npm run build && tsx server/index.ts",
+    "dev": "bun run build && tsx server/index.ts",
     "start": "tsx server/index.ts",
     "prepare:radio": "tsx server/prepare-cli.ts",
     "setup:radio-sound": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup-radio-sound.ps1",
@@ -12,7 +12,7 @@
     "build": "vite build",
     "test:unit": "vitest run",
     "test:e2e": "playwright test",
-    "test": "npm run check && npm run test:unit && npm run build && npm run test:e2e"
+    "test": "bun run check && bun run test:unit && bun run build && bun run test:e2e"
   },
   "dependencies": {
     "@breezystack/lamejs": "^1.2.7",
