@@ -14,7 +14,8 @@ The app is designed for a small private/boutique broadcast: start it only when y
 - DJ mixer mode for browser-side mixing/talk-over experiments.
 - Direct-mode hold-to-talk breaks: song playout pauses while the mic break is sent, then resumes.
 - Microphone input selection, meter, broadcast/shortwave/clean mic color modes, and local monitor.
-- Queue control: ordered/shuffle, skip, and ad-hoc track switching.
+- Queue control: ordered/shuffle, skip, ad-hoc track switching, and ready-track search by title, artist, or filename.
+- Live active-listener count in the Studio header.
 - Listener-to-DJ request line with session-only DJ inbox.
 - Optional Cloudflare tunnel control for sharing a public listener URL.
 - Optional Cloudflare Worker front door that serves branded offline responses when the local tunnel is down.
@@ -52,6 +53,7 @@ For browser-sourced audio, an `AudioWorklet` captures PCM on the real-time audio
 - Windows/PowerShell is the primary tested environment.
 - Node.js compatible with the current dependencies.
 - bun (the repo pins dependencies with `bun.lock`).
+- A modern browser with `AudioWorklet`, module Worker, and `getUserMedia` support for DJ mixer, voice program, and talk-break audio.
 - Icecast for Windows extracted under `.tools/icecast`.
 - Optional: Python 3 for building the vendored `make-radio-sound.exe` used to prepare retro `.radio.mp3` copies.
 - Optional: `cloudflared` for public tunnel control.
@@ -156,15 +158,17 @@ Strict mode stops with a non-zero exit code if any track fails:
 bun run prepare:radio -- "C:\path\to\music" --strict
 ```
 
-Prepared output is written next to the source folder:
+Prepared output is written inside the selected source folder:
 
 ```text
 Music/
   .saru2radio-cache/
     manifest.json
     tracks/
-      <track>.radio.mp3
+      <stable-track-id>.radio.mp3
 ```
+
+Prepared filenames use a stable hash of the original source path. Human-readable title, artist, and source-path metadata remain in `manifest.json` and are shown by the Studio when the original folder is scanned.
 
 In the Studio, use the original folder that contains `.saru2radio-cache` when preparing songs so manifest titles and artists remain available. The `.saru2radio-cache` folder and its `tracks` folder can also be scanned as ready broadcast libraries, but the Studio will not prepare those cached copies again.
 
@@ -178,11 +182,13 @@ In the Studio, use the original folder that contains `.saru2radio-cache` when pr
 6. Keep **Direct songs** selected for normal playback.
 7. Click **ON AIR**.
 8. Share the listener URL, or start the tunnel if configured.
-9. Use **Skip**, **Shuffle/Ordered**, click a ready track to play it now, or use its **Next** control to place it immediately after the current song.
+9. Search ready tracks by title, artist, or filename; use **Skip** or **Shuffle/Ordered**; click a track to play it now; or use its **Next** control to place it immediately after the current song.
 10. Hold the mic button for a direct talk break. In direct mode the song pauses while the mic break is live.
 11. Click **OFF AIR** when finished.
 
-For a voice-only program, keep **Direct songs** selected, switch the Direct submode from **Songs** to **Voice**, then click **ON AIR**. The mic button latches on/off, and the ambient bed control sets the generated background level.
+For a voice-only program, keep **Direct songs** selected, switch the Direct submode from **Songs** to **Voice**, then click **ON AIR**. The mic button latches on/off, and the ambient bed control sets the generated background level. While Direct mode is on air, the **Songs** and **Voice** controls switch between those programs without taking the station off air.
+
+The Studio header shows the number of listeners currently connected to the live stream.
 
 ### Direct Song Switching
 
@@ -240,6 +246,7 @@ Responses:
 - `201` with the stored message and a short-lived `feedbackToken` when accepted.
 - `400` for invalid input.
 - `409` when the station is off air.
+- `429` when the per-listener or station-wide request limit is reached; the response includes `Retry-After`.
 
 The listener page uses the receipt to check only its own request:
 
@@ -317,8 +324,11 @@ It also:
 Deploy the listener edge from the checked-in `wrangler.jsonc` configuration:
 
 ```powershell
+bunx wrangler login
 bun run deploy:edge
 ```
+
+`wrangler login` is required once for interactive local deployment. As an alternative, provide a scoped `CLOUDFLARE_API_TOKEN` in the environment before running `deploy:edge`.
 
 The GitHub CI workflow deploys the production Worker after all tests pass on `main` when `cloudflare/**` or `wrangler.jsonc` changes. A manual `workflow_dispatch` run always redeploys it. The repository needs `CLOUDFLARE_ACCOUNT_ID` and a narrowly scoped `CLOUDFLARE_API_TOKEN` in Actions secrets; Cloudflare's **Edit Cloudflare Workers** token template provides the required Worker and route permissions.
 

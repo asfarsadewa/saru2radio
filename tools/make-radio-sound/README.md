@@ -8,7 +8,7 @@ separate `make-radio-sound` checkout.
 Source note:
 
 - Canonical repository: `https://github.com/asfarsadewa/make-radio-sound`
-- Imported from source commit: `c951b01`
+- Forked from source commit `c951b01`, with local changes for saru2radio's bundled runtime, executable build, and preparation workflow.
 
 The generated Windows executable is intentionally not committed. Build it into
 the ignored repo-local tool directory with:
