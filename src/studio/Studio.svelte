@@ -9,6 +9,7 @@
 		Mic,
 		Radio,
 		RefreshCw,
+		Search,
 		Shuffle,
 		SkipForward,
 		StopCircle,
@@ -114,6 +115,7 @@
 	let tunnel: TunnelState = { running: false, url: null, startedAt: null, error: null, mode: null, hostname: null, configured: false };
 	let directoryInput = '';
 	let libraryRecursive = false;
+	let trackSearch = '';
 	let queue: Track[] = [];
 	let nowPlaying: NowPlaying | null = null;
 	let listenerMessages: ListenerMessage[] = [];
@@ -160,6 +162,13 @@
 	const engine = new StudioEngine();
 
 	$: readyTracks = library.tracks.filter((track) => track.cacheReady);
+	$: normalizedTrackSearch = trackSearch.trim().toLocaleLowerCase();
+	$: filteredTracks = normalizedTrackSearch
+		? library.tracks.filter((track) => {
+			const searchText = `${track.title}\n${track.artist}\n${track.fileName}`.toLocaleLowerCase();
+			return normalizedTrackSearch.split(/\s+/).every((term) => searchText.includes(term));
+		})
+		: library.tracks;
 	$: onAir = Boolean(status?.onAir);
 	$: sourceConnected = Boolean(status?.sourceConnected);
 	$: activeListeners = status?.activeListeners ?? 0;
@@ -1463,8 +1472,32 @@
 				<p class="processor-note">Radio processor unavailable. Run setup:radio-sound on this machine.</p>
 			{/if}
 
+			<div class="track-search">
+				<span class="track-search-icon" aria-hidden="true">
+					<Search size={15} strokeWidth={1.8} />
+				</span>
+				<input
+					type="search"
+					bind:value={trackSearch}
+					aria-label="Search tracks"
+					autocomplete="off"
+					placeholder="Search title, artist, or file"
+					spellcheck="false"
+				/>
+				{#if normalizedTrackSearch}
+					<span class="track-search-count" aria-live="polite">
+						{filteredTracks.length} {filteredTracks.length === 1 ? 'match' : 'matches'}
+					</span>
+				{/if}
+				{#if trackSearch}
+					<button type="button" aria-label="Clear track search" on:click={() => (trackSearch = '')}>
+						<X size={14} strokeWidth={1.8} />
+					</button>
+				{/if}
+			</div>
+
 			<div class="track-list" aria-label="Track list">
-				{#each library.tracks as track (track.id)}
+				{#each filteredTracks as track (track.id)}
 					<div
 						class:active={nowPlaying?.trackId === track.id}
 						class:ready={track.cacheReady}
@@ -1504,6 +1537,8 @@
 				{/each}
 				{#if library.tracks.length === 0}
 					<p class="empty-note">Choose a broadcast folder and scan local MP3 files.</p>
+				{:else if filteredTracks.length === 0}
+					<p class="empty-note">No tracks match this search.</p>
 				{/if}
 			</div>
 		</aside>
@@ -1971,6 +2006,66 @@
 	.preparation-status .preparation-error,
 	.processor-note {
 		color: var(--signal);
+	}
+
+	.track-search {
+		display: grid;
+		grid-template-columns: auto minmax(0, 1fr) auto auto;
+		align-items: center;
+		min-height: 38px;
+		border: 1px solid var(--line);
+		border-radius: 4px;
+		background: rgba(255, 255, 255, 0.46);
+		color: var(--ink-faint);
+	}
+
+	.track-search:focus-within {
+		border-color: rgba(181, 31, 36, 0.42);
+		box-shadow: 0 0 0 2px rgba(181, 31, 36, 0.1);
+	}
+
+	.track-search-icon {
+		display: inline-flex;
+		margin-left: 10px;
+	}
+
+	.track-search input {
+		min-width: 0;
+		border: 0;
+		background: transparent;
+		padding: 8px;
+		outline: 0;
+	}
+
+	.track-search input:focus-visible {
+		outline: 0;
+	}
+
+	.track-search input::-webkit-search-cancel-button {
+		display: none;
+	}
+
+	.track-search-count {
+		color: var(--ink-faint);
+		font-size: 9px;
+		font-weight: 700;
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
+		white-space: nowrap;
+	}
+
+	.track-search button {
+		display: inline-flex;
+		width: 34px;
+		height: 36px;
+		align-items: center;
+		justify-content: center;
+		background: transparent;
+		color: var(--ink-faint);
+	}
+
+	.track-search button:hover {
+		color: var(--ink);
 	}
 
 	.track-list,

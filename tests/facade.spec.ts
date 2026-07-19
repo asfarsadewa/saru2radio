@@ -130,6 +130,18 @@ test('Studio rebuilds and syncs the server queue while preserving human Next con
 		.poll(() => trackList.locator('.track-row').first().evaluate((row) => row.getBoundingClientRect().height))
 		.toBeGreaterThan(36);
 	await expect.poll(() => trackList.evaluate((list) => list.scrollHeight > list.clientHeight)).toBe(true);
+
+	const trackSearch = page.getByRole('searchbox', { name: 'Search tracks' });
+	await trackSearch.fill('night test');
+	await expect(trackList.locator('.track-row')).toHaveCount(1);
+	await expect(trackList.getByText('Night Signal')).toBeVisible();
+	await expect(page.getByText('1 match', { exact: true })).toBeVisible();
+	await trackSearch.fill('missing transmission');
+	await expect(trackList.locator('.track-row')).toHaveCount(0);
+	await expect(trackList.getByText('No tracks match this search.')).toBeVisible();
+	await page.getByRole('button', { name: 'Clear track search' }).click();
+	await expect(trackList.locator('.track-row')).toHaveCount(125);
+
 	await expect(page.getByRole('button', { name: 'Play Current Song next' })).toBeDisabled();
 	await expect(page.locator('.queue-items p').nth(1)).toHaveText('Night Signal');
 	const nextButton = page.getByRole('button', { name: 'Play Night Signal next' });
