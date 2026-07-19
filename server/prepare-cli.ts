@@ -8,13 +8,13 @@ const strict = args.includes('--strict');
 const recursive = args.includes('--recursive');
 
 if (!directory) {
-	console.error('Usage: npm run prepare:radio -- "C:\\path\\to\\music" [--strict] [--recursive]');
+	console.error('Usage: bun run prepare:radio -- "C:\\path\\to\\music" [--strict] [--recursive]');
 	process.exit(2);
 }
 
 const radioToolPath = await resolveExistingPath(resolveRadioToolPath());
 if (!radioToolPath) {
-	console.error('make-radio-sound.exe was not found. Run `npm run setup:radio-sound` or set RADIO_SOUND_EXE.');
+	console.error('make-radio-sound.exe was not found. Run `bun run setup:radio-sound` or set RADIO_SOUND_EXE.');
 	process.exit(2);
 }
 

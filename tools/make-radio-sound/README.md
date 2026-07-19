@@ -14,7 +14,7 @@ The generated Windows executable is intentionally not committed. Build it into
 the ignored repo-local tool directory with:
 
 ```powershell
-npm run setup:radio-sound
+bun run setup:radio-sound
 ```
 
 The setup script writes:

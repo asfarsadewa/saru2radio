@@ -197,7 +197,7 @@ describe('PreparationManager', () => {
 			await manager.waitForCompletion();
 
 			const unavailable = new PreparationManager(null);
-			expect(() => unavailable.start(directory)).toThrow('npm run setup:radio-sound');
+		expect(() => unavailable.start(directory)).toThrow('bun run setup:radio-sound');
 		} finally {
 			await manager.waitForCompletion();
 			await fs.rm(directory, { recursive: true, force: true });

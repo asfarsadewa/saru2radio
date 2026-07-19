@@ -157,8 +157,19 @@
 		padding: 10px;
 	}
 
+	.panel-head {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 12px;
+	}
+
 	.requests-panel .panel-head h2 {
+		margin: 4px 0 0;
+		font-family: var(--serif);
 		font-size: 20px;
+		font-style: italic;
+		font-weight: 400;
 	}
 
 	.request-panel-body,

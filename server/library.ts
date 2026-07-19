@@ -163,7 +163,7 @@ export class LibraryManager {
 		}
 
 		if (!this.radioToolPath) {
-			throw new Error('make-radio-sound.exe was not found. Run `npm run setup:radio-sound` or set RADIO_SOUND_EXE.');
+			throw new Error('make-radio-sound.exe was not found. Run `bun run setup:radio-sound` or set RADIO_SOUND_EXE.');
 		}
 
 		this.state.preparing = true;

@@ -33,7 +33,7 @@ function Find-Python {
 		return @($python.Source)
 	}
 
-	throw 'Python was not found. Install Python 3, then run npm run setup:radio-sound again.'
+	throw 'Python was not found. Install Python 3, then run bun run setup:radio-sound again.'
 }
 
 New-Item -ItemType Directory -Force -Path $RuntimeDir | Out-Null

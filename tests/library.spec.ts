@@ -34,7 +34,7 @@ describe('LibraryManager', () => {
 			const manager = new LibraryManager(null);
 			await manager.scan(directory);
 
-			await expect(manager.prepare()).rejects.toThrow('npm run setup:radio-sound');
+			await expect(manager.prepare()).rejects.toThrow('bun run setup:radio-sound');
 		} finally {
 			await fs.rm(directory, { recursive: true, force: true });
 		}

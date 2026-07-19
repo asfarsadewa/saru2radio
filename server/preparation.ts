@@ -72,7 +72,7 @@ export class PreparationManager {
 	start(directory: string, options: PreparationStartOptions = {}): PreparationState {
 		this.assertIdle();
 		if (!this.radioToolPath) {
-			throw new Error('make-radio-sound.exe was not found. Run `npm run setup:radio-sound` or set RADIO_SOUND_EXE.');
+			throw new Error('make-radio-sound.exe was not found. Run `bun run setup:radio-sound` or set RADIO_SOUND_EXE.');
 		}
 		const sourceDirectoryError = preparationSourceDirectoryError(directory);
 		if (sourceDirectoryError) {
