@@ -24,8 +24,8 @@ jobs:
       - name: Build
         run: bun run build
 
-      # The e2e suite boots the real server but skips the real Icecast binary
-      # by default (see playwright.config.ts), so it runs anywhere.
+      # The e2e suite boots the real server with an isolated fake Icecast
+      # receiver (see playwright.config.ts), so it runs anywhere.
       - name: Install Playwright browser
         run: bunx playwright install --with-deps chromium
 

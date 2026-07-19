@@ -1,8 +1,101 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, type APIRequestContext } from '@playwright/test';
+import { parseBuffer } from 'music-metadata';
 import type { PreparationState } from '../../src/lib/types.js';
 
 const STUDIO_URL = `http://127.0.0.1:${process.env.TEST_STUDIO_PORT ?? process.env.STUDIO_PORT ?? 18_011}`;
 const PUBLIC_URL = `http://127.0.0.1:${process.env.TEST_PUBLIC_PORT ?? process.env.PUBLIC_PORT ?? 18_012}`;
+const ICECAST_URL = `http://127.0.0.1:${process.env.TEST_ICECAST_PORT ?? 18_010}`;
+
+test('AudioWorklet source keeps mixer audio flowing through main-thread jank', async ({ page, request }) => {
+	await request.post(`${ICECAST_URL}/__test__/reset`);
+	await page.goto(`${STUDIO_URL}/`);
+	await expect(page.getByText('1 tracks')).toBeVisible();
+	await page.getByLabel('Broadcast mode').selectOption('mixer');
+	await page.getByRole('button', { name: 'ON AIR' }).click();
+	await expect(page.getByRole('button', { name: 'OFF AIR' })).toBeVisible();
+
+	await expect.poll(async () => (await fakeIcecastStats(request)).totalBytes).toBeGreaterThan(12_000);
+	const beforeJank = await fakeIcecastStats(request);
+	const jank = await page.evaluate(() => {
+		const startedAt = Date.now();
+		while (Date.now() - startedAt < 1000) {
+			// Deliberately monopolize the DOM/UI thread. Audio capture, encoding,
+			// and source transport must continue in the worklet/Worker path.
+		}
+		return { startedAt, endedAt: Date.now() };
+	});
+
+	await expect
+		.poll(async () => (await fakeIcecastStats(request)).totalBytes)
+		.toBeGreaterThan(beforeJank.totalBytes + 8_000);
+	const afterJank = await fakeIcecastStats(request);
+	const writesDuringJank = afterJank.chunkTimes.filter(
+		(timestamp) => timestamp >= jank.startedAt + 100 && timestamp <= jank.endedAt - 100
+	);
+	expect(writesDuringJank.length).toBeGreaterThan(0);
+
+	const captureResponse = await request.get(`${ICECAST_URL}/__test__/capture.mp3`);
+	const capture = await captureResponse.body();
+	const metadata = await parseBuffer(capture, { mimeType: 'audio/mpeg', size: capture.byteLength }, { duration: true });
+	expect(metadata.format).toMatchObject({
+		container: 'MPEG',
+		codec: 'MPEG 2 Layer 3',
+		sampleRate: 22_050,
+		numberOfChannels: 1,
+		bitrate: 128_000
+	});
+	expect(metadata.format.duration).toBeGreaterThan(1.5);
+	await page.getByRole('button', { name: 'OFF AIR' }).click();
+	await expect(page.getByRole('button', { name: 'ON AIR' })).toBeVisible();
+});
+
+test('AudioWorklet talk break keeps the mic stream flowing through main-thread jank', async ({ page, request }) => {
+	await request.post(`${ICECAST_URL}/__test__/reset`);
+	await page.goto(`${STUDIO_URL}/`);
+	await page.getByRole('button', { name: 'ON AIR' }).click();
+	await expect(page.getByRole('button', { name: 'OFF AIR' })).toBeVisible();
+	const talkButton = page.getByRole('button', { name: 'Hold talk' });
+	await expect(talkButton).toBeEnabled();
+	await expect.poll(async () => (await fakeIcecastStats(request)).totalBytes).toBeGreaterThan(12_000);
+
+	await talkButton.hover();
+	await page.mouse.down();
+	await expect(page.getByRole('button', { name: 'Talking' })).toBeVisible();
+	const jank = await page.evaluate(() => {
+		const startedAt = Date.now();
+		while (Date.now() - startedAt < 1000) {
+			// The direct song is paused during this interval. Bytes reaching fake
+			// Icecast must therefore be coming from the off-main-thread talk path.
+		}
+		return { startedAt, endedAt: Date.now() };
+	});
+	const afterJank = await fakeIcecastStats(request);
+	const writesDuringJank = afterJank.chunkTimes.filter(
+		(timestamp) => timestamp >= jank.startedAt + 150 && timestamp <= jank.endedAt - 100
+	);
+	expect(writesDuringJank.length).toBeGreaterThan(0);
+
+	await page.mouse.up();
+	await expect(page.getByRole('button', { name: 'Hold talk' })).toBeVisible();
+	await page.getByRole('button', { name: 'OFF AIR' }).click();
+	await expect(page.getByRole('button', { name: 'ON AIR' })).toBeVisible();
+});
+
+test('AudioWorklet source boots the voice program and carries the latched microphone', async ({ page, request }) => {
+	await request.post(`${ICECAST_URL}/__test__/reset`);
+	await page.goto(`${STUDIO_URL}/`);
+	await page.getByRole('button', { name: 'Voice' }).click();
+	await page.getByRole('button', { name: 'ON AIR' }).click();
+	await expect(page.getByRole('button', { name: 'OFF AIR' })).toBeVisible();
+	const micButton = page.getByRole('button', { name: 'Open mic' });
+	await expect(micButton).toBeEnabled();
+	await micButton.click();
+	await expect(page.getByRole('button', { name: 'Mic live' })).toBeVisible();
+	await expect.poll(async () => (await fakeIcecastStats(request)).totalBytes).toBeGreaterThan(12_000);
+	await page.getByRole('button', { name: 'Mic live' }).click();
+	await expect(page.getByRole('button', { name: 'Open mic' })).toBeVisible();
+	await page.getByRole('button', { name: 'OFF AIR' }).click();
+});
 
 test('studio dashboard renders local booth controls', async ({ page, request }) => {
 	await page.goto(`${STUDIO_URL}/`);
@@ -610,3 +703,16 @@ test('listener receives private AI DJ replies and can request again', async ({ p
 		'Your request is up next: Test Artist — Another Song.'
 	);
 });
+
+type FakeIcecastStats = {
+	totalBytes: number;
+	chunkTimes: number[];
+	chunkSizes: number[];
+	sourceRequests: number;
+};
+
+async function fakeIcecastStats(request: APIRequestContext): Promise<FakeIcecastStats> {
+	const response = await request.get(`${ICECAST_URL}/__test__/stats`);
+	expect(response.ok()).toBe(true);
+	return response.json() as Promise<FakeIcecastStats>;
+}

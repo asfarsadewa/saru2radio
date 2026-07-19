@@ -19,6 +19,7 @@ const DEFAULT_ICECAST = {
 	host: '127.0.0.1',
 	mount: '/live.mp3'
 };
+const ICECAST_PORT_OVERRIDE = optionalPort(process.env.SARU2RADIO_ICECAST_PORT);
 
 let icecastProcess: ChildProcessWithoutNullStreams | null = null;
 
@@ -35,7 +36,7 @@ export async function ensureIcecastRuntime(): Promise<IcecastRuntimeConfig> {
 	}
 
 	const runtime: IcecastRuntimeConfig = {
-		port: existing.port ?? DEFAULT_ICECAST.port,
+		port: ICECAST_PORT_OVERRIDE ?? existing.port ?? DEFAULT_ICECAST.port,
 		host: existing.host ?? DEFAULT_ICECAST.host,
 		mount: existing.mount ?? DEFAULT_ICECAST.mount,
 		sourcePassword: existing.sourcePassword ?? randomSecret(),
@@ -83,7 +84,7 @@ export async function startIcecast(runtime: IcecastRuntimeConfig): Promise<void>
 		await delay(250);
 	}
 
-	throw new Error('Icecast did not become reachable on 127.0.0.1:8010.');
+	throw new Error(`Icecast did not become reachable on ${runtime.host}:${runtime.port}.`);
 }
 
 export function stopIcecastProcess(): void {
@@ -216,6 +217,17 @@ export class IcecastSourceConnection {
 
 function randomSecret(): string {
 	return crypto.randomBytes(18).toString('base64url');
+}
+
+function optionalPort(value: string | undefined): number | undefined {
+	if (!value) {
+		return undefined;
+	}
+	const port = Number(value);
+	if (!Number.isInteger(port) || port < 1 || port > 65_535) {
+		throw new Error(`Invalid SARU2RADIO_ICECAST_PORT: ${value}`);
+	}
+	return port;
 }
 
 async function writeIcecastXml(runtime: IcecastRuntimeConfig): Promise<void> {

@@ -47,7 +47,7 @@
 	} from '../lib/api';
 	import { StudioEngine, type MicCaptureState, type MicColorMode } from '../lib/audio/studioEngine';
 	import { rmsTimeDomainLevel } from '../lib/audio/level';
-	import { TARGET_SAMPLE_RATE } from '../lib/audio/liveMp3';
+	import { TARGET_SAMPLE_RATE } from '../lib/audio/audioConstants';
 	import {
 		createPlaybackQueue,
 		cueTrackInQueue,

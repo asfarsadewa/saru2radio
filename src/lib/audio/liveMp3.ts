@@ -1,6 +1,7 @@
 import { Mp3Encoder } from '@breezystack/lamejs';
+import { TARGET_SAMPLE_RATE } from './audioConstants.js';
 
-export const TARGET_SAMPLE_RATE = 22_050;
+export { TARGET_SAMPLE_RATE } from './audioConstants.js';
 const FRAME_SIZE = 1152;
 
 export class LiveMp3Encoder {

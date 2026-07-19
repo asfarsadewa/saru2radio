@@ -1,8 +1,7 @@
 import { rmsTimeDomainLevel } from './level';
-import { LiveMp3Encoder, TARGET_SAMPLE_RATE } from './liveMp3';
+import { EncoderSourceBridge, type EncoderSourceMode } from './encoderSource';
+import { TARGET_SAMPLE_RATE } from './audioConstants';
 import type { Track } from '../types';
-
-const MIXER_BUFFER_SIZE = 4096;
 
 type EngineCallbacks = {
 	onTrack(track: Track): void;
@@ -118,9 +117,8 @@ const EMPTY_MIC_STATE: MicCaptureState = {
 
 export class StudioEngine {
 	private context: AudioContext | null = null;
-	private socket: WebSocket | null = null;
-	private encoder: LiveMp3Encoder | null = null;
-	private processor: ScriptProcessorNode | null = null;
+	private encoderSource: EncoderSourceBridge | null = null;
+	private encoderSessionToken = 0;
 	private analyser: AnalyserNode | null = null;
 	private analyserData: Uint8Array<ArrayBuffer> | null = null;
 	private levelFrame = 0;
@@ -142,6 +140,7 @@ export class StudioEngine {
 	private micOpen = false;
 	private mode: 'mixer' | 'talk' | 'voice' | null = null;
 	private talkActive = false;
+	private talkTransition: Promise<void> = Promise.resolve();
 	private skipRequested = false;
 
 	async start(queue: Track[], options: EngineOptions, callbacks: EngineCallbacks) {
@@ -170,21 +169,6 @@ export class StudioEngine {
 		this.context = createAudioContext(AudioContextConstructor);
 		await this.ensureContextRunning();
 
-		this.encoder = new LiveMp3Encoder(this.context.sampleRate, options.bitrateKbps);
-		this.socket = await openSourceSocket(options.bitrateKbps);
-		const sourceSocket = this.socket;
-		this.callbacks.onSourceState(true);
-		sourceSocket.addEventListener('close', () => {
-			if (this.socket === sourceSocket && this.mode === 'mixer') {
-				this.callbacks?.onSourceState(false);
-			}
-		});
-		sourceSocket.addEventListener('error', () => {
-			if (this.socket === sourceSocket && this.mode === 'mixer') {
-				this.callbacks?.onError('Source bridge connection failed.');
-			}
-		});
-
 		const limiter = this.context.createDynamicsCompressor();
 		limiter.threshold.value = -6;
 		limiter.knee.value = 8;
@@ -208,15 +192,7 @@ export class StudioEngine {
 		this.analyserData = new Uint8Array(this.analyser.fftSize);
 		limiter.connect(this.analyser);
 
-		this.processor = this.context.createScriptProcessor(MIXER_BUFFER_SIZE, 1, 1);
-		this.processor.onaudioprocess = (event) => {
-			const input = event.inputBuffer.getChannelData(0);
-			const output = event.outputBuffer.getChannelData(0);
-			output.fill(0);
-			this.sendEncoded(input);
-		};
-		limiter.connect(this.processor);
-		this.processor.connect(this.context.destination);
+		await this.connectEncoderSource(limiter, 'source', 'DJ mixer source bridge');
 
 		this.monitorGain = this.context.createGain();
 		this.monitorGain.gain.value = options.monitor ? 1 : 0;
@@ -249,8 +225,6 @@ export class StudioEngine {
 		try {
 			this.context = createAudioContext(AudioContextConstructor);
 			await this.ensureContextRunning();
-
-			this.encoder = new LiveMp3Encoder(this.context.sampleRate, options.bitrateKbps);
 
 			const limiter = this.context.createDynamicsCompressor();
 			limiter.threshold.value = -8;
@@ -286,34 +260,12 @@ export class StudioEngine {
 			this.analyserData = new Uint8Array(this.analyser.fftSize);
 			limiter.connect(this.analyser);
 
-			this.processor = this.context.createScriptProcessor(MIXER_BUFFER_SIZE, 1, 1);
-			this.processor.onaudioprocess = (event) => {
-				const input = event.inputBuffer.getChannelData(0);
-				const output = event.outputBuffer.getChannelData(0);
-				output.fill(0);
-				this.sendEncoded(input);
-			};
-			limiter.connect(this.processor);
-			this.processor.connect(this.context.destination);
+			await this.connectEncoderSource(limiter, 'source', 'Voice program source bridge');
 
 			this.monitorGain = this.context.createGain();
 			this.monitorGain.gain.value = options.monitor ? 1 : 0;
 			limiter.connect(this.monitorGain);
 			this.monitorGain.connect(this.context.destination);
-
-			this.socket = await openSourceSocket(options.bitrateKbps);
-			const sourceSocket = this.socket;
-			this.callbacks.onSourceState(true);
-			sourceSocket.addEventListener('close', () => {
-				if (this.socket === sourceSocket && this.mode === 'voice') {
-					this.callbacks?.onSourceState(false);
-				}
-			});
-			sourceSocket.addEventListener('error', () => {
-				if (this.socket === sourceSocket && this.mode === 'voice') {
-					this.callbacks?.onError('Voice program source bridge failed.');
-				}
-			});
 
 			this.updateLevel();
 			this.applyDucking();
@@ -345,14 +297,6 @@ export class StudioEngine {
 		this.context = createAudioContext(AudioContextConstructor);
 		await this.ensureContextRunning();
 
-		this.socket = await openTalkBreakSocket();
-		const talkSocket = this.socket;
-		talkSocket.addEventListener('error', () => {
-			if (this.socket === talkSocket && this.mode === 'talk') {
-				this.callbacks?.onError('Talk break bridge connection failed.');
-			}
-		});
-
 		const limiter = this.context.createDynamicsCompressor();
 		limiter.threshold.value = -8;
 		limiter.knee.value = 10;
@@ -372,17 +316,7 @@ export class StudioEngine {
 		this.analyserData = new Uint8Array(this.analyser.fftSize);
 		limiter.connect(this.analyser);
 
-		this.processor = this.context.createScriptProcessor(MIXER_BUFFER_SIZE, 1, 1);
-		this.processor.onaudioprocess = (event) => {
-			const input = event.inputBuffer.getChannelData(0);
-			const output = event.outputBuffer.getChannelData(0);
-			output.fill(0);
-			if (this.talkActive) {
-				this.sendEncoded(input);
-			}
-		};
-		limiter.connect(this.processor);
-		this.processor.connect(this.context.destination);
+		await this.connectEncoderSource(limiter, 'talk', 'Talk break bridge');
 
 		this.monitorGain = this.context.createGain();
 		this.monitorGain.gain.value = options.monitor ? 1 : 0;
@@ -400,21 +334,17 @@ export class StudioEngine {
 		this.sourceToken += 1;
 		this.currentSource?.stop();
 		this.currentSource = null;
-
-		if (mode === 'talk') {
-			this.finishTalkBreak();
-		} else if (this.encoder && this.socket?.readyState === WebSocket.OPEN) {
-			for (const chunk of this.encoder.flush()) {
-				this.socket.send(chunk);
-			}
-			this.socket.send(JSON.stringify({ type: 'stop' }));
-		}
-
-		this.socket?.close();
-		this.socket = null;
-		this.encoder = null;
-		this.mode = null;
 		this.talkActive = false;
+		const encoderSource = this.encoderSource;
+		this.encoderSource = null;
+		this.encoderSessionToken += 1;
+		try {
+			await encoderSource?.stop();
+		} catch (error) {
+			this.callbacks?.onError(error instanceof Error ? error.message : 'Could not stop the encoder source bridge.');
+		}
+		this.talkTransition = Promise.resolve();
+		this.mode = null;
 
 		if (this.levelFrame) {
 			cancelAnimationFrame(this.levelFrame);
@@ -425,7 +355,6 @@ export class StudioEngine {
 			this.micLevelFrame = 0;
 		}
 
-		this.processor?.disconnect();
 		this.analyser?.disconnect();
 		this.musicGain?.disconnect();
 		this.micGain?.disconnect();
@@ -438,7 +367,6 @@ export class StudioEngine {
 		} catch {
 			// The ambient bed may already be stopped during teardown.
 		}
-		this.processor = null;
 		this.analyser = null;
 		this.musicGain = null;
 		this.micGain = null;
@@ -499,11 +427,8 @@ export class StudioEngine {
 		}
 		await this.ensureContextRunning();
 		if (this.mode === 'talk') {
-			if (open) {
-				this.beginTalkBreak();
-			} else {
-				this.finishTalkBreak();
-			}
+			this.talkTransition = this.talkTransition.catch(() => undefined).then(() => this.syncTalkCapture());
+			await this.talkTransition;
 			return;
 		}
 		this.applyDucking();
@@ -789,50 +714,75 @@ export class StudioEngine {
 		source.start();
 	}
 
-	private sendEncoded(input: Float32Array) {
-		if (!this.encoder || !this.socket || this.socket.readyState !== WebSocket.OPEN) {
-			return;
+	private async connectEncoderSource(input: AudioNode, sourceMode: EncoderSourceMode, label: string): Promise<void> {
+		if (!this.context || !this.options) {
+			throw new Error(`${label} cannot start before the audio graph is ready.`);
 		}
 
-		for (const chunk of this.encoder.encode(input)) {
-			this.socket.send(chunk);
+		const token = ++this.encoderSessionToken;
+		const bridge = await EncoderSourceBridge.connect(this.context, input, {
+			mode: sourceMode,
+			bitrateKbps: this.options.bitrateKbps,
+			socketUrl: studioSocketUrl(sourceMode === 'talk' ? '/talk-break' : '/source'),
+			onError: (message) => {
+				if (token === this.encoderSessionToken) {
+					this.callbacks?.onError(`${label}: ${message}`);
+				}
+			},
+			onSourceState: (connected) => {
+				if (sourceMode === 'source' && token === this.encoderSessionToken) {
+					this.callbacks?.onSourceState(connected);
+				}
+			}
+		});
+
+		if (!this.running || token !== this.encoderSessionToken) {
+			await bridge.stop();
+			throw new Error(`${label} was superseded before it finished starting.`);
+		}
+		this.encoderSource = bridge;
+	}
+
+	private async syncTalkCapture(): Promise<void> {
+		if (this.mode !== 'talk') {
+			return;
+		}
+		if (this.micOpen && !this.talkActive) {
+			await this.beginTalkBreak();
+		} else if (!this.micOpen && this.talkActive) {
+			await this.finishTalkBreak();
 		}
 	}
 
-	private beginTalkBreak() {
+	private async beginTalkBreak(): Promise<void> {
 		if (!this.context || !this.options || this.mode !== 'talk' || this.talkActive) {
 			return;
 		}
 		if (!this.micGraph) {
-			this.callbacks?.onError('Microphone is not ready yet. Allow browser mic access, choose an input, or press Retry mic.');
-			return;
+			throw new Error('Microphone is not ready yet. Allow browser mic access, choose an input, or press Retry mic.');
 		}
-		if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
-			this.callbacks?.onError('Talk break bridge is not connected.');
-			return;
+		const bridge = this.encoderSource;
+		if (!bridge) {
+			throw new Error('Talk break bridge is not connected.');
 		}
 
-		this.encoder = new LiveMp3Encoder(this.context.sampleRate, this.options.bitrateKbps);
+		await bridge.beginTalk();
+		if (this.mode !== 'talk' || this.encoderSource !== bridge) {
+			return;
+		}
 		this.talkActive = true;
-		this.socket.send(JSON.stringify({ type: 'begin', bitrateKbps: this.options.bitrateKbps }));
 		this.applyDucking();
 	}
 
-	private finishTalkBreak() {
-		if (this.mode !== 'talk') {
+	private async finishTalkBreak(): Promise<void> {
+		if (this.mode !== 'talk' || !this.talkActive) {
 			return;
 		}
 
-		const encoder = this.encoder;
-		this.encoder = null;
+		const bridge = this.encoderSource;
 		this.talkActive = false;
 		this.applyDucking();
-		if (encoder && this.socket?.readyState === WebSocket.OPEN) {
-			for (const chunk of encoder.flush()) {
-				this.socket.send(chunk);
-			}
-			this.socket.send(JSON.stringify({ type: 'end' }));
-		}
+		await bridge?.endTalk();
 	}
 
 	private applyDucking() {
@@ -886,54 +836,9 @@ export class StudioEngine {
 	}
 }
 
-async function openSourceSocket(bitrateKbps: number): Promise<WebSocket> {
+function studioSocketUrl(pathname: '/source' | '/talk-break'): string {
 	const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-	const socket = new WebSocket(`${protocol}//${window.location.host}/source`);
-	socket.binaryType = 'arraybuffer';
-
-	await waitForSocketOpen(socket, 'Source bridge timed out.', 'Could not open source bridge.', () => {
-		socket.send(JSON.stringify({ type: 'start', bitrateKbps }));
-	});
-
-	return socket;
-}
-
-async function openTalkBreakSocket(): Promise<WebSocket> {
-	const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-	const socket = new WebSocket(`${protocol}//${window.location.host}/talk-break`);
-	socket.binaryType = 'arraybuffer';
-
-	await waitForSocketOpen(socket, 'Talk break bridge timed out.', 'Could not open talk break bridge.');
-
-	return socket;
-}
-
-// On timeout the pending socket is closed and the listeners removed, so a
-// half-open bridge cannot linger and fire into nothing.
-function waitForSocketOpen(socket: WebSocket, timeoutMessage: string, errorMessage: string, onOpen?: () => void): Promise<void> {
-	return new Promise((resolve, reject) => {
-		const timeout = window.setTimeout(() => {
-			cleanup();
-			socket.close();
-			reject(new Error(timeoutMessage));
-		}, 5000);
-		const cleanup = () => {
-			window.clearTimeout(timeout);
-			socket.removeEventListener('open', handleOpen);
-			socket.removeEventListener('error', handleError);
-		};
-		const handleOpen = () => {
-			cleanup();
-			onOpen?.();
-			resolve();
-		};
-		const handleError = () => {
-			cleanup();
-			reject(new Error(errorMessage));
-		};
-		socket.addEventListener('open', handleOpen);
-		socket.addEventListener('error', handleError);
-	});
+	return `${protocol}//${window.location.host}${pathname}`;
 }
 
 declare global {

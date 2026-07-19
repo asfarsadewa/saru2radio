@@ -12,6 +12,8 @@
     "build": "vite build",
     "test:unit": "vitest run",
     "test:e2e": "playwright test",
+    "test:e2e:prepare": "tsx tests/e2e/prepare-fixtures.ts",
+    "test:e2e:icecast": "tsx tests/e2e/fake-icecast.ts",
     "test": "bun run check && bun run test:unit && bun run build && bun run test:e2e"
   },
   "dependencies": {

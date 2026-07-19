@@ -45,6 +45,8 @@ There are two broadcast paths:
 - **Voice program** is a Direct submode for mic-led segments such as news breaks. It uses the browser as the live source, does not require a prepared song queue, and can keep a quiet generated ambience under the mic.
 - **DJ mixer** runs the song/mic mix through the browser's Web Audio graph. It is useful for live mixing behavior, but direct mode is the safer path for stable listener playback.
 
+For browser-sourced audio, an `AudioWorklet` captures PCM on the real-time audio thread and transfers batches directly to a dedicated Worker. The Worker owns MP3 encoding and the source WebSocket, keeping both tasks independent of studio rendering and other main-thread work.
+
 ## Requirements
 
 - Windows/PowerShell is the primary tested environment.
@@ -318,6 +320,8 @@ It also:
 | --- | --- | --- |
 | `STUDIO_PORT` | `8011` | Local DJ studio and private API port. |
 | `PUBLIC_PORT` | `8012` | Local public listener facade port. |
+| `SARU2RADIO_ICECAST_PORT` | `8010` | Override the local Icecast port, including for an isolated test receiver. |
+| `SARU2RADIO_RUNTIME_DIR` | `.saru2radio` | Override generated runtime/config state; useful for isolated test runs. |
 | `LISTENER_REQUEST_LIMIT` | `6` | Public listener requests allowed per client window. |
 | `LISTENER_REQUEST_GLOBAL_LIMIT` | `30` | Station-wide listener requests allowed per window; caps total AI DJ calls. |
 | `LISTENER_REQUEST_WINDOW_MS` | `60000` | Listener request rate-limit window in milliseconds. |
@@ -377,8 +381,8 @@ Run the full validation sequence.
 
 - Frontend entrypoints are `studio.html` and `listener.html`.
 - Vite builds both Svelte apps into `dist`.
-- The Playwright e2e suite builds `dist/`, then boots its own server on ports `18011`/`18012` (override with `TEST_STUDIO_PORT`/`TEST_PUBLIC_PORT`). It runs without a local Icecast binary by default; set `SARU2RADIO_E2E_REAL_ICECAST=1` to exercise the real Icecast integration.
-- Unit tests include server helpers, tunnel config, Cloudflare Worker behavior, MP3 playout pacing, and listener message validation.
+- The Playwright e2e suite builds `dist/`, then boots its own server on ports `18011`/`18012` (override with `TEST_STUDIO_PORT`/`TEST_PUBLIC_PORT`) and an isolated fake Icecast receiver on `18010`. It verifies that valid MP3 bytes continue arriving while the studio's main thread is deliberately stalled.
+- Unit tests include server helpers, tunnel config, Cloudflare Worker behavior, MP3 encoding and playout pacing, and listener message validation.
 - `Direct songs` mode is the default UX path for stable streaming.
 - Listener messages are not persisted and are cleared on server restart.
 
