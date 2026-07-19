@@ -5,9 +5,14 @@ const MAX_MESSAGES = 100;
 const MAX_NAME_CHARS = 40;
 const MAX_MESSAGE_CHARS = 500;
 
-type ListenerMessageInput = {
+export type ListenerMessageInput = {
 	name?: unknown;
 	message?: unknown;
+};
+
+export type ValidatedListenerMessageInput = {
+	name: string;
+	message: string;
 };
 
 export class ListenerMessageValidationError extends Error {}
@@ -22,8 +27,7 @@ export class ListenerMessageStore {
 	}
 
 	create(input: ListenerMessageInput): ListenerMessage {
-		const name = normalizeRequiredString(input.name, 'Name', MAX_NAME_CHARS);
-		const message = normalizeRequiredString(input.message, 'Message', MAX_MESSAGE_CHARS);
+		const { name, message } = validateListenerMessageInput(input);
 		const listenerMessage: ListenerMessage = {
 			id: randomUUID(),
 			name,
@@ -44,6 +48,13 @@ export class ListenerMessageStore {
 		this.messages = [];
 		return [];
 	}
+}
+
+export function validateListenerMessageInput(input: ListenerMessageInput): ValidatedListenerMessageInput {
+	return {
+		name: normalizeRequiredString(input.name, 'Name', MAX_NAME_CHARS),
+		message: normalizeRequiredString(input.message, 'Message', MAX_MESSAGE_CHARS)
+	};
 }
 
 function normalizeRequiredString(value: unknown, label: string, maxLength: number): string {

@@ -48,6 +48,34 @@ describe('IcecastSourceConnection', () => {
 
 		expect(states).toEqual([true, false]);
 	});
+
+	it('reports an unexpected source loss exactly once', async () => {
+		let sourceRequest: IncomingMessage | null = null;
+		server = await listen((request) => {
+			sourceRequest = request;
+			request.resume();
+		});
+		const states: boolean[] = [];
+		let losses = 0;
+		connection = new IcecastSourceConnection(
+			runtimeFor(server),
+			'test',
+			(connected) => states.push(connected),
+			() => {
+				losses += 1;
+			}
+		);
+
+		connection.connect();
+		await waitFor(() => sourceRequest !== null);
+		(sourceRequest as IncomingMessage | null)?.destroy();
+		await waitFor(() => losses === 1);
+
+		expect(states).toEqual([true, false]);
+		connection.disconnect();
+		await delay(20);
+		expect(losses).toBe(1);
+	});
 });
 
 type RequestHandler = (request: IncomingMessage, response: ServerResponse) => void;

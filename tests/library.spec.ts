@@ -221,6 +221,46 @@ describe('LibraryManager', () => {
 		}
 	});
 
+	it('rejects manifest tracks that escape through a symlink or junction', async () => {
+		const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'saru2radio-cache-link-'));
+		const outsideDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'saru2radio-cache-outside-'));
+
+		try {
+			const cacheDirectory = path.join(directory, '.saru2radio-cache');
+			const tracksDirectory = path.join(cacheDirectory, 'tracks');
+			const linkPath = path.join(tracksDirectory, 'escape');
+			const outsideTrack = path.join(outsideDirectory, 'outside.mp3');
+			await fs.mkdir(tracksDirectory, { recursive: true });
+			await fs.writeFile(outsideTrack, 'outside-audio');
+			await fs.symlink(outsideDirectory, linkPath, process.platform === 'win32' ? 'junction' : 'dir');
+			await fs.writeFile(
+				path.join(cacheDirectory, 'manifest.json'),
+				JSON.stringify({
+					version: 1,
+					preset: 'sw-0.7-mp3',
+					tracks: {
+						escape: {
+							sourcePath: path.join(directory, 'original.mp3'),
+							size: 13,
+							mtimeMs: 1,
+							preset: 'sw-0.7-mp3',
+							cachePath: path.join(linkPath, 'outside.mp3'),
+							title: 'Outside Track',
+							artist: 'Untrusted Manifest',
+							duration: 60
+						}
+					}
+				})
+			);
+
+			const scanned = await new LibraryManager(null).scanBroadcast(directory);
+			expect(scanned.tracks).toEqual([]);
+		} finally {
+			await fs.rm(directory, { recursive: true, force: true });
+			await fs.rm(outsideDirectory, { recursive: true, force: true });
+		}
+	});
+
 	it('persists studio state for broadcast library restore', async () => {
 		const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'saru2radio-state-'));
 		const statePath = path.join(directory, 'studio-state.json');

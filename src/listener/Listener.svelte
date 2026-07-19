@@ -11,7 +11,8 @@
 	let nowPlaying: NowPlaying | null = null;
 	let audio: HTMLAudioElement;
 	let playing = false;
-	let errorMessage = '';
+	let reachabilityError = '';
+	let playbackError = '';
 	let requestName = '';
 	let requestMessage = '';
 	let requestStatus = '';
@@ -23,6 +24,7 @@
 	const feedbackTimers = new Set<number>();
 
 	$: onAir = Boolean(status?.onAir);
+	$: errorMessage = playbackError || reachabilityError;
 	$: requestDisabled = !onAir || requestSending;
 	$: requestCharacters = requestMessage.length;
 
@@ -53,14 +55,14 @@
 			]);
 			status = (await statusResponse.json()) as BroadcastStatus;
 			nowPlaying = (await nowResponse.json()) as NowPlaying;
-			errorMessage = '';
+			reachabilityError = '';
 		} catch {
-			errorMessage = 'Could not reach saru2radio.';
+			reachabilityError = 'Could not reach saru2radio.';
 		}
 	}
 
 	async function togglePlay() {
-		errorMessage = '';
+		playbackError = '';
 		if (!onAir) {
 			return;
 		}
@@ -74,7 +76,7 @@
 			}
 			playing = !playing;
 		} catch {
-			errorMessage = 'The live stream is not ready yet.';
+			playbackError = 'The live stream is not ready yet.';
 		}
 	}
 

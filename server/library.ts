@@ -429,16 +429,22 @@ async function findBroadcastAudioFiles(directory: string, options: Required<Scan
 }
 
 async function resolveManifestPlayPath(entry: ManifestTrack, tracksDirectory: string): Promise<string | null> {
-	const cacheRoot = path.resolve(tracksDirectory);
+	const lexicalCacheRoot = path.resolve(tracksDirectory);
+	const realCacheRoot = await realPathIfExists(lexicalCacheRoot);
+	if (!realCacheRoot) {
+		return null;
+	}
 	// Manifest files travel inside downloaded music folders, so treat their paths
-	// as untrusted: only ever serve files contained in the cache's tracks directory.
+	// as untrusted: only ever serve real files contained in the cache's tracks
+	// directory, including after resolving symlinks and junctions.
 	const candidates = [entry.cachePath, path.join(tracksDirectory, path.basename(entry.cachePath))]
 		.filter(Boolean)
 		.map((candidate) => path.resolve(candidate))
-		.filter((candidate) => isPathInsideDirectory(cacheRoot, candidate));
+		.filter((candidate) => isPathInsideDirectory(lexicalCacheRoot, candidate));
 	for (const candidate of candidates) {
-		if (await fileExists(candidate)) {
-			return candidate;
+		const realCandidate = await realPathIfExists(candidate);
+		if (realCandidate && isPathInsideDirectory(realCacheRoot, realCandidate)) {
+			return realCandidate;
 		}
 	}
 	return null;
@@ -447,6 +453,14 @@ async function resolveManifestPlayPath(entry: ManifestTrack, tracksDirectory: st
 function isPathInsideDirectory(root: string, target: string): boolean {
 	const relative = path.relative(path.resolve(root), path.resolve(target));
 	return relative !== '' && !relative.startsWith('..') && !path.isAbsolute(relative);
+}
+
+async function realPathIfExists(filePath: string): Promise<string | null> {
+	try {
+		return await fs.realpath(filePath);
+	} catch {
+		return null;
+	}
 }
 
 async function readTrackMetadata(filePath: string): Promise<{ title: string; artist: string; duration: number | null }> {

@@ -176,6 +176,116 @@ test('Studio rebuilds and syncs the server queue while preserving human Next con
 	await expect(page.getByRole('button', { name: 'Play Middle Song next' })).toBeEnabled();
 });
 
+test('Studio ignores stale polls and keeps direct controls when stop fails', async ({ page }) => {
+	const offAirStatus = {
+		onAir: false,
+		streamUrl: '',
+		stationName: 'saru2radio',
+		startedAt: null,
+		icecastUrl: '',
+		listenerUrl: '',
+		tunnelUrl: null,
+		sourceConnected: true,
+		activeListeners: 0,
+		directSongsActive: false,
+		queueTrackIds: []
+	};
+	const liveStatus = {
+		...offAirStatus,
+		onAir: true,
+		startedAt: '2026-07-19T03:00:00.000Z',
+		directSongsActive: true,
+		queueTrackIds: ['track-1']
+	};
+	const nowPlaying = {
+		trackId: 'track-1',
+		title: 'Current Song',
+		artist: 'Test Artist',
+		startedAt: '2026-07-19T03:00:00.000Z',
+		duration: 180
+	};
+	let live = false;
+	let statusRequestCount = 0;
+	let skipRequests = 0;
+	let releaseStalePoll!: () => void;
+	let markStalePollStarted!: () => void;
+	let markStalePollDelivered!: () => void;
+	const stalePollRelease = new Promise<void>((resolve) => {
+		releaseStalePoll = resolve;
+	});
+	const stalePollStarted = new Promise<void>((resolve) => {
+		markStalePollStarted = resolve;
+	});
+	const stalePollDelivered = new Promise<void>((resolve) => {
+		markStalePollDelivered = resolve;
+	});
+
+	await page.route(`${STUDIO_URL}/api/status`, async (route) => {
+		statusRequestCount += 1;
+		if (statusRequestCount === 2) {
+			markStalePollStarted();
+			await stalePollRelease;
+			await route.fulfill({ json: offAirStatus });
+			markStalePollDelivered();
+			return;
+		}
+		await route.fulfill({ json: live ? liveStatus : offAirStatus });
+	});
+	await page.route(`${STUDIO_URL}/api/library`, (route) =>
+		route.fulfill({
+			json: {
+				directory: 'C:\\Music',
+				tracks: [
+					{
+						id: 'track-1',
+						sourcePath: 'C:\\Music\\track-1.mp3',
+						playPath: 'C:\\Music\\.saru2radio-cache\\tracks\\track-1.mp3',
+						fileName: 'track-1.mp3',
+						title: 'Current Song',
+						artist: 'Test Artist',
+						duration: 180,
+						size: 1024,
+						mtimeMs: 1,
+						cachePath: 'C:\\Music\\.saru2radio-cache\\tracks\\track-1.mp3',
+						cacheReady: true,
+						cacheStale: false
+					}
+				],
+				preparing: false,
+				lastScanAt: '2026-07-19T03:00:00.000Z',
+				recursive: false,
+				sourceKind: 'cache-manifest'
+			}
+		})
+	);
+	await page.route(`${STUDIO_URL}/api/now-playing`, (route) => route.fulfill({ json: nowPlaying }));
+	await page.route(`${STUDIO_URL}/api/broadcast/start`, async (route) => {
+		live = true;
+		await route.fulfill({ json: liveStatus });
+	});
+	await page.route(`${STUDIO_URL}/api/broadcast/stop`, (route) =>
+		route.fulfill({ status: 503, contentType: 'text/plain', body: 'Simulated stop failure.' })
+	);
+	await page.route(`${STUDIO_URL}/api/broadcast/skip`, async (route) => {
+		skipRequests += 1;
+		await route.fulfill({ json: liveStatus });
+	});
+
+	await page.goto(`${STUDIO_URL}/`);
+	await stalePollStarted;
+	await page.getByRole('button', { name: 'ON AIR' }).click();
+	await expect(page.getByRole('button', { name: 'OFF AIR' })).toBeVisible();
+
+	releaseStalePoll();
+	await stalePollDelivered;
+	await expect(page.getByRole('button', { name: 'OFF AIR' })).toBeVisible();
+
+	await page.getByRole('button', { name: 'OFF AIR' }).click();
+	await expect(page.getByText('Simulated stop failure.')).toBeVisible();
+	await page.getByRole('button', { name: 'Skip track' }).click();
+	await expect.poll(() => skipRequests).toBe(1);
+});
+
 test('Studio prepares new tracks on air and merges them into the live queue', async ({ page }) => {
 	const directory = 'C:\\Music';
 	const startedAt = '2026-07-18T12:00:00.000Z';
@@ -388,6 +498,41 @@ test('public facade renders listener page and hides studio API', async ({ page, 
 		await expect(page.getByLabel('Song request or message')).toBeDisabled();
 	}
 	expect(status.icecastUrl).toBe('');
+});
+
+test('listener status polling does not clear a playback failure', async ({ page }) => {
+	const status = {
+		onAir: true,
+		streamUrl: `${PUBLIC_URL}/live.mp3`,
+		stationName: 'saru2radio',
+		startedAt: '2026-07-19T03:00:00.000Z',
+		icecastUrl: '',
+		listenerUrl: PUBLIC_URL,
+		tunnelUrl: null,
+		sourceConnected: true,
+		activeListeners: 1
+	};
+	await page.addInitScript(() => {
+		HTMLMediaElement.prototype.play = () => Promise.reject(new Error('Simulated playback failure'));
+	});
+	await page.route(`${PUBLIC_URL}/status.json`, (route) => route.fulfill({ json: status }));
+	await page.route(`${PUBLIC_URL}/now-playing.json`, (route) =>
+		route.fulfill({
+			json: {
+				trackId: 'current',
+				title: 'Current Song',
+				artist: 'Test Artist',
+				startedAt: '2026-07-19T03:00:00.000Z',
+				duration: 180
+			}
+		})
+	);
+
+	await page.goto(`${PUBLIC_URL}/`);
+	await page.getByRole('button', { name: 'Play stream' }).click();
+	await expect(page.getByText('The live stream is not ready yet.')).toBeVisible();
+	await page.waitForTimeout(3_750);
+	await expect(page.getByText('The live stream is not ready yet.')).toBeVisible();
 });
 
 test('listener receives private AI DJ replies and can request again', async ({ page }) => {

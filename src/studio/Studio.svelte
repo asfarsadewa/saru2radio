@@ -272,6 +272,7 @@
 	});
 
 	async function refreshAll() {
+		const mutationVersion = polledStateMutationVersion;
 		try {
 			const [
 				nextConfig,
@@ -294,6 +295,9 @@
 				getAiDjActions(),
 				getStudioState()
 			]);
+			if (mutationVersion !== polledStateMutationVersion || polledStateMutationsInFlight > 0) {
+				return;
+			}
 			config = nextConfig;
 			library = nextLibrary;
 			preparation = nextPreparation;
@@ -302,6 +306,7 @@
 			nowPlaying = nextNowPlaying;
 			listenerMessages = nextListenerMessages;
 			aiDjActions = nextAiDjActions;
+			syncActiveBroadcastState(nextStatus);
 			ordered = studioState.ordered;
 			libraryRecursive = studioState.broadcastRecursive;
 			directoryInput = library.directory || studioState.broadcastDirectory || studioState.prepDirectory;
@@ -312,34 +317,79 @@
 		}
 	}
 
-	let statusPollInFlight = false;
+	let polledStateMutationVersion = 0;
+	let polledStateMutationsInFlight = 0;
+	let statusPollPromise: Promise<void> | null = null;
 
-	// Guard against overlapping interval polls: without it, a slow response can
-	// resolve after a newer poll (or an optimistic action) and clobber fresher
-	// state with stale data.
-	async function refreshStatusOnly() {
-		if (statusPollInFlight) {
+	// Interval polls are serialized, and every state-changing request advances a
+	// version so a response captured before or during that request cannot clobber
+	// the newer result.
+	function refreshStatusOnly(): Promise<void> {
+		if (statusPollPromise) {
+			return statusPollPromise;
+		}
+
+		const mutationVersion = polledStateMutationVersion;
+		const poll = (async () => {
+			try {
+				const [nextStatus, nextTunnel, nextNowPlaying, nextListenerMessages, nextAiDjActions] = await Promise.all([
+					getStatus(),
+					getTunnel(),
+					getNowPlaying(),
+					getListenerMessages(),
+					getAiDjActions()
+				]);
+				if (mutationVersion !== polledStateMutationVersion || polledStateMutationsInFlight > 0) {
+					return;
+				}
+				status = nextStatus;
+				tunnel = nextTunnel;
+				nowPlaying = nextNowPlaying;
+				listenerMessages = nextListenerMessages;
+				aiDjActions = nextAiDjActions;
+				syncActiveBroadcastState(nextStatus);
+				syncServerQueue(nextStatus);
+			} catch {
+				// Polling should not interrupt the booth.
+			}
+		})().finally(() => {
+			if (statusPollPromise === poll) {
+				statusPollPromise = null;
+			}
+		});
+		statusPollPromise = poll;
+		return poll;
+	}
+
+	async function refreshPolledStateAfterMutation(): Promise<void> {
+		const pendingPoll = statusPollPromise;
+		if (pendingPoll) {
+			await pendingPoll;
+		}
+		await refreshStatusOnly();
+	}
+
+	async function mutatePolledState<T>(operation: () => Promise<T>): Promise<T> {
+		polledStateMutationVersion += 1;
+		polledStateMutationsInFlight += 1;
+		try {
+			return await operation();
+		} finally {
+			polledStateMutationsInFlight -= 1;
+			polledStateMutationVersion += 1;
+		}
+	}
+
+	function syncActiveBroadcastState(nextStatus: StudioBroadcastStatus): void {
+		if (!nextStatus.onAir) {
+			activeBroadcastMode = null;
+			activeDirectProgram = null;
+			outputLevel = 0.05;
 			return;
 		}
-		statusPollInFlight = true;
-		try {
-			const [nextStatus, nextTunnel, nextNowPlaying, nextListenerMessages, nextAiDjActions] = await Promise.all([
-				getStatus(),
-				getTunnel(),
-				getNowPlaying(),
-				getListenerMessages(),
-				getAiDjActions()
-			]);
-			status = nextStatus;
-			tunnel = nextTunnel;
-			nowPlaying = nextNowPlaying;
-			listenerMessages = nextListenerMessages;
-			aiDjActions = nextAiDjActions;
-			syncServerQueue(nextStatus);
-		} catch {
-			// Polling should not interrupt the booth.
-		} finally {
-			statusPollInFlight = false;
+		if (nextStatus.directSongsActive) {
+			activeBroadcastMode = 'direct';
+			activeDirectProgram = 'songs';
 		}
 	}
 
@@ -372,7 +422,7 @@
 			await updateStudioState({ broadcastRecursive: libraryRecursive });
 			buildQueue(status, { preferServerQueue: false });
 			if (directSongsOnAir && queue.length > 0) {
-				const nextStatus = await updateBroadcastQueue(queue.map((track) => track.id));
+				const nextStatus = await mutatePolledState(() => updateBroadcastQueue(queue.map((track) => track.id)));
 				status = nextStatus;
 				syncServerQueue(nextStatus);
 			}
@@ -440,7 +490,7 @@
 			await updateStudioState({ broadcastRecursive: preparation.recursive });
 			buildQueue(status, { preferServerQueue: false });
 			if (status?.directSongsActive && queue.length > 0) {
-				const nextStatus = await updateBroadcastQueue(queue.map((track) => track.id));
+				const nextStatus = await mutatePolledState(() => updateBroadcastQueue(queue.map((track) => track.id)));
 				status = nextStatus;
 				syncServerQueue(nextStatus);
 			}
@@ -542,7 +592,7 @@
 		try {
 			if (directMode) {
 				busyMessage = 'Starting direct stream';
-				status = await startBroadcast(queue.map((track) => track.id));
+				status = await mutatePolledState(() => startBroadcast(queue.map((track) => track.id)));
 				activeBroadcastMode = 'direct';
 				activeDirectProgram = 'songs';
 				directProgram = 'songs';
@@ -550,10 +600,12 @@
 				await syncDirectMonitor({ restart: true });
 			} else {
 				busyMessage = 'Starting DJ mixer';
-				await engine.start(queue, getEngineOptions(), getEngineCallbacks());
+				status = await mutatePolledState(async () => {
+					await engine.start(queue, getEngineOptions(), getEngineCallbacks());
+					return getStatus();
+				});
 				activeBroadcastMode = 'mixer';
 				activeDirectProgram = null;
-				status = await getStatus();
 				await refreshMicrophones();
 				outputLevel = 0.72;
 			}
@@ -561,7 +613,7 @@
 		} catch (error) {
 			stopDirectMonitor();
 			await engine.stop();
-			await stopBroadcast();
+			await mutatePolledState(stopBroadcast);
 			activeBroadcastMode = null;
 			activeDirectProgram = null;
 			setError(error);
@@ -579,9 +631,11 @@
 		micReady = false;
 		micLevel = 0;
 		try {
-			await engine.startVoiceProgram(getEngineOptions(), getEngineCallbacks());
-			await refreshMicrophones();
-			status = await getStatus();
+			status = await mutatePolledState(async () => {
+				await engine.startVoiceProgram(getEngineOptions(), getEngineCallbacks());
+				await refreshMicrophones();
+				return getStatus();
+			});
 			activeBroadcastMode = 'direct';
 			activeDirectProgram = 'voice';
 			directProgram = 'voice';
@@ -594,12 +648,12 @@
 				duration: null
 			};
 			try {
-				nowPlaying = await updateNowPlaying({
+				nowPlaying = await mutatePolledState(() => updateNowPlaying({
 					trackId: null,
 					title: 'Live voice',
 					artist: config?.stationName ?? 'saru2radio',
 					duration: null
-				});
+				}));
 			} catch {
 				// The stream can keep running if metadata refresh races the source socket.
 			}
@@ -608,7 +662,7 @@
 			stopDirectMonitor();
 			await engine.stop();
 			try {
-				status = await stopBroadcast();
+				status = await mutatePolledState(stopBroadcast);
 			} catch {
 				// The source may not have reached the server yet.
 			}
@@ -635,9 +689,11 @@
 		micReady = false;
 		micLevel = 0;
 		try {
-			await engine.startVoiceProgram(getEngineOptions(), getEngineCallbacks());
-			await refreshMicrophones();
-			status = await getStatus();
+			status = await mutatePolledState(async () => {
+				await engine.startVoiceProgram(getEngineOptions(), getEngineCallbacks());
+				await refreshMicrophones();
+				return getStatus();
+			});
 			activeBroadcastMode = 'direct';
 			activeDirectProgram = 'voice';
 			directProgram = 'voice';
@@ -650,12 +706,12 @@
 				duration: null
 			};
 			try {
-				nowPlaying = await updateNowPlaying({
+				nowPlaying = await mutatePolledState(() => updateNowPlaying({
 					trackId: null,
 					title: 'Live voice',
 					artist: config?.stationName ?? 'saru2radio',
 					duration: null
-				});
+				}));
 			} catch {
 				// The stream can keep running if metadata refresh races the source socket.
 			}
@@ -711,7 +767,7 @@
 
 		try {
 			busyMessage = 'Starting direct songs';
-			status = await startBroadcast(queue.map((track) => track.id));
+			status = await mutatePolledState(() => startBroadcast(queue.map((track) => track.id)));
 		} catch (error) {
 			try {
 				status = await getStatus();
@@ -766,12 +822,22 @@
 		micMessage = '';
 		micMuted = false;
 		try {
-			status = await stopBroadcast();
+			status = await mutatePolledState(stopBroadcast);
 		} catch (error) {
 			// The engine is already torn down, so resync with the server instead
 			// of stranding the booth between on-air and off-air state.
 			setError(error);
-			await refreshStatusOnly();
+			await refreshPolledStateAfterMutation();
+		}
+		if (status?.onAir) {
+			// The stop did not reach the server. Keep the active mode and metadata
+			// so server-owned direct playout remains controllable and a later poll
+			// can finish reconciling the booth.
+			if (activeBroadcastMode === 'direct') {
+				await syncDirectMonitor({ restart: true });
+			}
+			await handlePreparationTerminal();
+			return;
 		}
 		activeBroadcastMode = null;
 		activeDirectProgram = null;
@@ -786,7 +852,7 @@
 		}
 		try {
 			if (activeBroadcastMode === 'direct') {
-				status = await skipBroadcast();
+				status = await mutatePolledState(skipBroadcast);
 				nowPlaying = await getNowPlaying();
 				return;
 			}
@@ -1115,12 +1181,12 @@
 			duration: track.duration
 		};
 		try {
-			nowPlaying = await updateNowPlaying({
+			nowPlaying = await mutatePolledState(() => updateNowPlaying({
 				trackId: track.id,
 				title: track.title,
 				artist: track.artist,
 				duration: track.duration
-			});
+			}));
 		} catch {
 			// Local display should keep moving even if a metadata update races the source socket.
 		}
@@ -1138,7 +1204,7 @@
 		if (onAir) {
 			if (activeBroadcastMode === 'direct') {
 				try {
-					status = await playBroadcastNow(queue.map((candidate) => candidate.id));
+					status = await mutatePolledState(() => playBroadcastNow(queue.map((candidate) => candidate.id)));
 					nowPlaying = await getNowPlaying();
 				} catch (error) {
 					queue = previousQueue;
@@ -1168,7 +1234,7 @@
 		queueUpdatePending = true;
 		try {
 			if (directSongsOnAir) {
-				const nextStatus = await queueBroadcastNext(track.id);
+				const nextStatus = await mutatePolledState(() => queueBroadcastNext(track.id));
 				const tracksById = new Map(currentReadyTracks().map((candidate) => [candidate.id, candidate]));
 				queue = nextStatus.queueTrackIds
 					.map((trackId) => tracksById.get(trackId))
@@ -1230,7 +1296,7 @@
 		buildQueue(status, { preferServerQueue: false });
 		try {
 			if (directSongsOnAir && queue.length > 0) {
-				const nextStatus = await updateBroadcastQueue(queue.map((track) => track.id));
+				const nextStatus = await mutatePolledState(() => updateBroadcastQueue(queue.map((track) => track.id)));
 				status = nextStatus;
 				syncServerQueue(nextStatus);
 			}
@@ -1258,7 +1324,7 @@
 
 	async function toggleTunnel() {
 		try {
-			tunnel = tunnel.running ? await stopTunnel() : await startTunnel();
+			tunnel = await mutatePolledState(() => (tunnel.running ? stopTunnel() : startTunnel()));
 		} catch (error) {
 			setError(error);
 		}
@@ -1277,7 +1343,7 @@
 
 	async function dismissListenerRequest(id: string) {
 		try {
-			listenerMessages = await deleteListenerMessage(id);
+			listenerMessages = await mutatePolledState(() => deleteListenerMessage(id));
 		} catch (error) {
 			setError(error);
 		}
@@ -1285,7 +1351,7 @@
 
 	async function clearListenerRequests() {
 		try {
-			listenerMessages = await clearListenerMessages();
+			listenerMessages = await mutatePolledState(clearListenerMessages);
 		} catch (error) {
 			setError(error);
 		}
@@ -1293,7 +1359,7 @@
 
 	async function clearAiDjActionLog() {
 		try {
-			aiDjActions = await clearAiDjActions();
+			aiDjActions = await mutatePolledState(clearAiDjActions);
 		} catch (error) {
 			setError(error);
 		}

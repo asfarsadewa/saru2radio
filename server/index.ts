@@ -17,7 +17,12 @@ import {
 import { LibraryManager, resolveRadioToolPath } from './library.js';
 import { ActiveListenerCounter } from './listener-count.js';
 import { DIST_DIR } from './paths.js';
-import { ListenerMessageStore, ListenerMessageValidationError } from './listener-messages.js';
+import {
+	ListenerMessageStore,
+	ListenerMessageValidationError,
+	validateListenerMessageInput,
+	type ValidatedListenerMessageInput
+} from './listener-messages.js';
 import { feedbackForAiDjAction, ListenerFeedbackStore } from './listener-feedback.js';
 import { DirectMp3Playout } from './playout.js';
 import { PreparationBusyError, PreparationManager } from './preparation.js';
@@ -96,6 +101,8 @@ async function main() {
 			status.sourceConnected = connected;
 			if (connected) {
 				scheduleSourceRecoveryReset();
+			} else {
+				cancelSourceRecoveryReset();
 			}
 		},
 		handleSourceConnectionLost
@@ -421,17 +428,31 @@ function createPublicApp() {
 	app.get('/now-playing.json', (_request, response) => response.json(nowPlaying));
 	app.post(
 		'/requests',
-		createRateLimitMiddleware(listenerRequestGlobalLimiter, () => 'global'),
 		createRateLimitMiddleware(listenerRequestLimiter, listenerRequestKey),
 		express.json({ limit: '8kb' }),
-		(request, response) => {
+		(request, response, next) => {
 			if (!status.onAir) {
 				response.status(409).type('text/plain').send('The station is off air.');
 				return;
 			}
 
 			try {
-				const listenerMessage = listenerMessages.create(request.body ?? {});
+				response.locals.listenerMessageInput = validateListenerMessageInput(request.body ?? {});
+				next();
+			} catch (error) {
+				if (error instanceof ListenerMessageValidationError) {
+					response.status(400).type('text/plain').send(error.message);
+					return;
+				}
+				next(error);
+			}
+		},
+		createRateLimitMiddleware(listenerRequestGlobalLimiter, () => 'global'),
+		(request, response) => {
+			try {
+				const listenerMessage = listenerMessages.create(
+					response.locals.listenerMessageInput as ValidatedListenerMessageInput
+				);
 				const feedbackToken = listenerFeedback.issue(listenerMessage.id);
 				try {
 					aiDj.enqueue(listenerMessage);
@@ -837,6 +858,14 @@ function scheduleSourceRecoveryReset(): void {
 		sourceStableTimer = null;
 		sourceRecoveryAttempts = 0;
 	}, SOURCE_RECOVERY_STABLE_MS);
+}
+
+function cancelSourceRecoveryReset(): void {
+	if (!sourceStableTimer) {
+		return;
+	}
+	clearTimeout(sourceStableTimer);
+	sourceStableTimer = null;
 }
 
 function sourceAudioWanted(): boolean {
