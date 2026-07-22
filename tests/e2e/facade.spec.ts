@@ -110,6 +110,11 @@ test('studio dashboard renders local booth controls', async ({ page, request }) 
 	await expect(page.getByText('listener requests', { exact: true })).toBeVisible();
 	await expect(page.getByText('AI DJ actions', { exact: true })).toBeVisible();
 	await expect(page.getByRole('button', { name: /No mic/i })).toBeDisabled();
+	const frequencyPanel = await page.locator('.dial').boundingBox();
+	const requestsPanel = await page.locator('.requests-panel').boundingBox();
+	expect(frequencyPanel).not.toBeNull();
+	expect(requestsPanel).not.toBeNull();
+	expect(requestsPanel!.height).toBeGreaterThan(frequencyPanel!.height);
 
 	const aiDjActionsResponse = await request.get(`${STUDIO_URL}/api/ai-dj/actions`);
 	expect(aiDjActionsResponse.ok()).toBe(true);

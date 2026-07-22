@@ -1874,7 +1874,7 @@
 
 	.broadcast-panel {
 		display: grid;
-		grid-template-rows: minmax(216px, 0.9fr) auto auto minmax(160px, 0.6fr);
+		grid-template-rows: minmax(174px, 0.58fr) auto auto minmax(200px, 1fr);
 		gap: 12px;
 		overflow: hidden;
 	}
@@ -2178,10 +2178,10 @@
 	.dial {
 		position: relative;
 		display: grid;
-		grid-template-rows: auto minmax(70px, 0.5fr) minmax(78px, auto);
-		gap: 8px;
+		grid-template-rows: auto minmax(44px, 0.45fr) minmax(54px, auto);
+		gap: 6px;
 		min-height: 0;
-		padding: 16px 20px;
+		padding: 12px 16px;
 		overflow: hidden;
 		background:
 			linear-gradient(180deg, rgba(20, 19, 17, 0.04), transparent),
@@ -2195,7 +2195,7 @@
 	}
 
 	.frequency strong {
-		font-size: clamp(1.8rem, 3.4vw, 2.75rem);
+		font-size: clamp(1.55rem, 2.6vw, 2.2rem);
 		font-weight: 500;
 		font-variant-numeric: tabular-nums;
 		letter-spacing: 0;
@@ -2205,8 +2205,8 @@
 	.vu {
 		position: relative;
 		align-self: center;
-		width: min(68%, 360px);
-		aspect-ratio: 4 / 1;
+		width: min(62%, 320px);
+		aspect-ratio: 4.8 / 1;
 		margin: 0 auto;
 		border-bottom: 1px solid var(--line-strong);
 		background:
@@ -2246,13 +2246,13 @@
 	.now h2 {
 		display: -webkit-box;
 		max-width: 100%;
-		margin: 5px 0 4px;
+		margin: 3px 0 2px;
 		overflow: hidden;
 		-webkit-box-orient: vertical;
 		-webkit-line-clamp: 2;
 		line-clamp: 2;
 		font-family: var(--serif);
-		font-size: clamp(1.45rem, 2.8vw, 2.25rem);
+		font-size: clamp(1.25rem, 2.2vw, 1.8rem);
 		font-style: italic;
 		font-weight: 400;
 		line-height: 1.02;
